@@ -342,6 +342,58 @@ mod tests {
     }
 
     #[test]
+    fn bpe_applies_ranked_merges() {
+        let tok = tiny();
+        // "he" and "ll" are merged tokens (ids 4 and 5); "o" stays id 3.
+        assert_eq!(tok.encode("he", false).unwrap(), vec![4]);
+        assert_eq!(tok.encode("ll", false).unwrap(), vec![5]);
+        assert_eq!(tok.encode("hello", false).unwrap(), vec![4, 5, 3]);
+    }
+
+    #[test]
+    fn from_header_missing_tokens_errors() {
+        let bytes = write_gguf(&BTreeMap::new(), &[]).unwrap();
+        let h = ModelHeader::from_bytes(&bytes).unwrap();
+        assert!(Tokenizer::from_header(&h).is_err());
+    }
+
+    #[test]
+    fn from_header_add_bos_eos_and_pad() {
+        let mut meta = BTreeMap::new();
+        meta.insert(
+            "tokenizer.ggml.tokens".into(),
+            MetaValue::Array(
+                ["<bos>", "<eos>", "<pad>", "h", "e", "l", "o", "he", "ll"]
+                    .into_iter()
+                    .map(|s| MetaValue::String(s.into()))
+                    .collect(),
+            ),
+        );
+        meta.insert(
+            "tokenizer.ggml.merges".into(),
+            MetaValue::Array(vec![
+                MetaValue::String("h e".into()),
+                MetaValue::String("l l".into()),
+            ]),
+        );
+        meta.insert("tokenizer.ggml.bos_token_id".into(), MetaValue::U32(0));
+        meta.insert("tokenizer.ggml.eos_token_id".into(), MetaValue::U32(1));
+        meta.insert("tokenizer.ggml.padding_token_id".into(), MetaValue::U32(2));
+        meta.insert("tokenizer.ggml.add_bos_token".into(), MetaValue::Bool(true));
+        meta.insert("tokenizer.ggml.add_eos_token".into(), MetaValue::Bool(true));
+        let bytes = write_gguf(&meta, &[]).unwrap();
+        let h = ModelHeader::from_bytes(&bytes).unwrap();
+        let tok = Tokenizer::from_header(&h).unwrap();
+        assert_eq!(tok.bos(), Some(0));
+        assert_eq!(tok.eos(), Some(1));
+        assert_eq!(tok.pad(), Some(2));
+        // add_special=false: BPE only (he=7, ll=8, o=6).
+        assert_eq!(tok.encode("hello", false).unwrap(), vec![7, 8, 6]);
+        // add_special=true: bos + BPE + eos.
+        assert_eq!(tok.encode("hello", true).unwrap(), vec![0, 7, 8, 6, 1]);
+    }
+
+    #[test]
     fn from_header_roundtrip() {
         let mut meta = BTreeMap::new();
         meta.insert(

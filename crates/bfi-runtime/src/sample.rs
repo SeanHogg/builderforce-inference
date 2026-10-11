@@ -474,6 +474,32 @@ mod tests {
     }
 
     #[test]
+    fn top_k_with_temperature_never_picks_outside_k() {
+        // Greedy (temp=0) returns before top-k, so this is the lock that
+        // top-k actually truncates the distribution.
+        let logits = [10.0, 9.0, 8.0, 7.0];
+        for seed in 0..32 {
+            let p = SampleParams {
+                temperature: 5.0,
+                top_k: 1,
+                seed,
+                ..Default::default()
+            };
+            assert_eq!(sample(&logits, &[], &p), 0, "top_k=1 seed {seed}");
+        }
+        for seed in 0..32 {
+            let p = SampleParams {
+                temperature: 5.0,
+                top_k: 2,
+                seed,
+                ..Default::default()
+            };
+            let id = sample(&logits, &[], &p);
+            assert!(id <= 1, "top_k=2 seed {seed} picked {id}");
+        }
+    }
+
+    #[test]
     fn top_p_nucleus() {
         // vocab = [0,1,2,3], logits = [10.0, 5.0, 1.0, 0.1]
         // After softmax: ~0.999 for 0, ~0.001 for others
