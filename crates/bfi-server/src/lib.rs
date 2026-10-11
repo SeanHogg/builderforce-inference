@@ -474,6 +474,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chat_tool_choice_object_accepted_without_model() {
+        let app = router(AppState::new(ServerConfig::default()));
+        let body = r#"{
+            "model":"x",
+            "messages":[{"role":"user","content":"hi"}],
+            "tools":[{"type":"function","function":{"name":"f","parameters":{}}}],
+            "tool_choice":{"type":"function","function":{"name":"f"}}
+        }"#;
+        let res = send(app, "POST", "/v1/chat/completions", body, None).await;
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn chat_json_schema_honored_without_model() {
+        let app = router(AppState::new(ServerConfig::default()));
+        let body = r#"{
+            "model":"x",
+            "messages":[{"role":"user","content":"hi"}],
+            "response_format":{"type":"json_schema","json_schema":{"name":"out","schema":{"type":"object"}}}
+        }"#;
+        let res = send(app, "POST", "/v1/chat/completions", body, None).await;
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn chat_grammar_honored_without_model() {
+        let app = router(AppState::new(ServerConfig::default()));
+        let body = r#"{
+            "model":"x",
+            "messages":[{"role":"user","content":"hi"}],
+            "grammar":"root ::= object"
+        }"#;
+        let res = send(app, "POST", "/v1/chat/completions", body, None).await;
+        assert_ne!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn chat_unknown_response_format_is_400() {
+        let app = router(AppState::new(ServerConfig::default()));
+        let body = r#"{
+            "model":"x",
+            "messages":[{"role":"user","content":"hi"}],
+            "response_format":{"type":"xml"}
+        }"#;
+        let res = send(app, "POST", "/v1/chat/completions", body, None).await;
+        let (status, v) = body_json(res).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("xml"));
+    }
+
+    #[tokio::test]
+    async fn chat_json_schema_missing_schema_is_400() {
+        let app = router(AppState::new(ServerConfig::default()));
+        let body = r#"{
+            "model":"x",
+            "messages":[{"role":"user","content":"hi"}],
+            "response_format":{"type":"json_schema"}
+        }"#;
+        let res = send(app, "POST", "/v1/chat/completions", body, None).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn generate_without_model_is_503() {
         let app = router(AppState::new(ServerConfig::default()));
         let res = send(

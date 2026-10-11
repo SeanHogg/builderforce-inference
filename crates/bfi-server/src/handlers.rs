@@ -86,6 +86,9 @@ pub struct ChatCompletionRequest {
     tool_choice: Option<Value>,
     #[serde(default)]
     response_format: Option<Value>,
+    /// llama.cpp / Ollama GBNF. Parsed here; sampler constraint is M4 runtime.
+    #[serde(default)]
+    grammar: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -202,14 +205,91 @@ fn default_true() -> bool {
     true
 }
 
+/// OpenAI `response_format` / llama.cpp `grammar` after parse.
+/// Honored as a request constraint; the sampler does not yet constrain tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputConstraint {
+    Free,
+    JsonObject,
+    JsonSchema,
+    Grammar,
+}
+
+fn parse_output_constraint(
+    response_format: Option<&Value>,
+    grammar: Option<&str>,
+) -> Result<OutputConstraint, String> {
+    let grammar = grammar.map(str::trim).filter(|s| !s.is_empty());
+    let format = match response_format {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(parse_response_format(v)?),
+    };
+    if grammar.is_some() {
+        return Ok(OutputConstraint::Grammar);
+    }
+    Ok(format.unwrap_or(OutputConstraint::Free))
+}
+
+fn parse_response_format(v: &Value) -> Result<OutputConstraint, String> {
+    match v {
+        Value::String(s) => match s.as_str() {
+            "text" => Ok(OutputConstraint::Free),
+            "json" | "json_object" => Ok(OutputConstraint::JsonObject),
+            other => Err(format!(
+                "unsupported response_format '{other}'; expected text, json_object, or json_schema"
+            )),
+        },
+        Value::Object(obj) => {
+            let ty = obj
+                .get("type")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "response_format.type is required".to_string())?;
+            match ty {
+                "text" => Ok(OutputConstraint::Free),
+                "json" | "json_object" => Ok(OutputConstraint::JsonObject),
+                "json_schema" => {
+                    let schema = obj.get("json_schema").ok_or_else(|| {
+                        "response_format.json_schema is required when type is json_schema"
+                            .to_string()
+                    })?;
+                    if schema.is_null() {
+                        return Err(
+                            "response_format.json_schema is required when type is json_schema"
+                                .into(),
+                        );
+                    }
+                    Ok(OutputConstraint::JsonSchema)
+                }
+                other => Err(format!(
+                    "unsupported response_format.type '{other}'; expected text, json_object, or json_schema"
+                )),
+            }
+        }
+        _ => Err("response_format must be an object".to_string()),
+    }
+}
+
 pub async fn v1_chat_completions(
     State(state): State<AppState>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Response {
+    let constraint = match parse_output_constraint(
+        req.response_format.as_ref(),
+        req.grammar.as_deref(),
+    ) {
+        Ok(c) => c,
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": msg })),
+            )
+                .into_response();
+        }
+    };
     let model = req.model.clone();
     let params = sample_params(req.max_tokens, req.temperature);
     let messages = to_chat_messages(&req.messages);
-    let _ = (&req.tools, &req.tool_choice, &req.response_format);
+    let _ = (&req.tools, &req.tool_choice, constraint);
     match generate_chat(&state, &model, &messages, params).await {
         Ok((name, text)) => {
             if req.stream {
@@ -816,11 +896,76 @@ mod tests {
             "messages": [{"role":"user","content":"hi"}],
             "tools": [{"type":"function","function":{"name":"f","parameters":{}}}],
             "tool_choice": "auto",
-            "response_format": {"type":"json_object"}
+            "response_format": {"type":"json_object"},
+            "grammar": "root ::= object"
         }"#;
         let req: ChatCompletionRequest = serde_json::from_str(raw).unwrap();
         assert!(req.tools.is_some());
         assert_eq!(req.tool_choice, Some(Value::String("auto".into())));
         assert!(req.response_format.is_some());
+        assert_eq!(req.grammar.as_deref(), Some("root ::= object"));
+    }
+
+    #[test]
+    fn tool_choice_object_deserializes() {
+        let raw = r#"{
+            "model": "x",
+            "messages": [],
+            "tool_choice": {"type":"function","function":{"name":"f"}}
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            req.tool_choice.as_ref().unwrap()["function"]["name"],
+            "f"
+        );
+    }
+
+    #[test]
+    fn output_constraint_honors_json_modes_and_grammar() {
+        assert_eq!(
+            parse_output_constraint(None, None).unwrap(),
+            OutputConstraint::Free
+        );
+        assert_eq!(
+            parse_output_constraint(Some(&json!({"type": "text"})), None).unwrap(),
+            OutputConstraint::Free
+        );
+        assert_eq!(
+            parse_output_constraint(Some(&json!({"type": "json_object"})), None).unwrap(),
+            OutputConstraint::JsonObject
+        );
+        assert_eq!(
+            parse_output_constraint(Some(&json!("json")), None).unwrap(),
+            OutputConstraint::JsonObject
+        );
+        assert_eq!(
+            parse_output_constraint(
+                Some(&json!({
+                    "type": "json_schema",
+                    "json_schema": {"name": "out", "schema": {"type": "object"}}
+                })),
+                None
+            )
+            .unwrap(),
+            OutputConstraint::JsonSchema
+        );
+        assert_eq!(
+            parse_output_constraint(None, Some("root ::= object")).unwrap(),
+            OutputConstraint::Grammar
+        );
+        assert_eq!(
+            parse_output_constraint(Some(&json!({"type": "json_object"})), Some("  ")).unwrap(),
+            OutputConstraint::JsonObject
+        );
+    }
+
+    #[test]
+    fn output_constraint_rejects_unknown_and_incomplete() {
+        let err = parse_output_constraint(Some(&json!({"type": "xml"})), None).unwrap_err();
+        assert!(err.contains("xml"), "{err}");
+        let err = parse_output_constraint(Some(&json!({"type": "json_schema"})), None).unwrap_err();
+        assert!(err.contains("json_schema"), "{err}");
+        let err = parse_output_constraint(Some(&json!(1)), None).unwrap_err();
+        assert!(err.contains("object"), "{err}");
     }
 }

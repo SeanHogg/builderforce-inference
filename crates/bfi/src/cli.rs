@@ -46,8 +46,7 @@ pub enum Commands {
     },
     /// Memory need vs this machine. Header-only HTTP range before download.
     ///
-    /// Full KV/state/activation formula is ticket 2927; this command emits the
-    /// PRD JSON shape with a stub breakdown (weights exact, other terms 0/overhead).
+    /// PRD §5.7: weights + KV(ctx) + recurrent state + activations + overhead.
     Fit {
         /// Local path, `repo[:quant]`, or alias.
         model: String,
