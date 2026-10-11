@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use bfi_core::Backend;
-use bfi_gguf::GgufFile;
+use bfi_gguf::{GgufFile, ModelHeader};
 
 use crate::sample::{sample, SampleParams};
 use crate::tokenize::Tokenizer;
@@ -33,7 +33,7 @@ pub struct StateLayout {
 
 impl StateLayout {
     /// Extract layout from GGUF header.
-    pub fn from_header(header: &bfi_gguf::ModelHeader) -> Result<Self> {
+    pub fn from_header(header: &ModelHeader) -> Result<Self> {
         let arch = header
             .architecture()
             .ok_or_else(|| anyhow::anyhow!("missing architecture"))?;
