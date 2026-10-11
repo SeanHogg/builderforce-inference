@@ -11,10 +11,10 @@ members = [
     "crates/bf-cloud",
     "crates/bfi-gguf",
     "crates/bfi-core",
-    # "crates/bfi-models",    # landed by ticket 2922
-    # "crates/bfi-runtime",   # landed by ticket 2923
-    # "crates/bfi-server",    # landed by ticket 2924
-    # "crates/bfi",           # landed by ticket 2925
+    "crates/bfi-models",
+    "crates/bfi-runtime",
+    "crates/bfi-server",
+    "crates/bfi",
     "app/src-tauri",
 ]
 

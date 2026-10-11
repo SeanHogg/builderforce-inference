@@ -1,6 +1,6 @@
 [package]
 name = "bfi-models"
-description = "Architecture registry: qwen3 (M1) and the Model/Architecture traits"
+description = "Architecture registry: qwen3 (M2) and qwen35/Bonsai (M3)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

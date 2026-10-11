@@ -6,7 +6,7 @@ use bfi_gguf::GgufFile;
 
 use crate::state::{Logits, SeqState, StateLayout};
 
-/// One registered architecture (qwen3, later qwen35, …).
+/// One registered architecture (qwen3, qwen35, …).
 pub trait Architecture: Send + Sync {
     fn name(&self) -> &'static str;
     fn from_gguf(
@@ -33,6 +33,10 @@ pub trait Model: Send + Sync {
         state: &mut SeqState,
     ) -> anyhow::Result<Logits>;
     fn state_layout(&self) -> StateLayout;
+    /// MTP / next-n tensors loaded but not run. Default 0.
+    fn mtp_loaded(&self) -> usize {
+        0
+    }
 }
 
 /// Inventory payload. Architectures submit `&'static dyn Architecture`.
@@ -41,7 +45,7 @@ pub struct ArchReg(pub &'static dyn Architecture);
 inventory::collect!(ArchReg);
 
 pub fn architecture_for(name: &str) -> Option<&'static dyn Architecture> {
-    inventory::iter::<ArchReg>
+    inventory::iter::<ArchReg>()
         .find(|r| r.0.name() == name)
         .map(|r| r.0)
 }
@@ -56,7 +60,7 @@ pub fn load_model(
         .architecture()
         .ok_or_else(|| anyhow!("GGUF missing metadata key general.architecture"))?;
     let arch = architecture_for(name).ok_or_else(|| {
-        let known: Vec<&str> = inventory::iter::<ArchReg>.map(|r| r.0.name()).collect();
+        let known: Vec<&str> = inventory::iter::<ArchReg>().map(|r| r.0.name()).collect();
         anyhow!("unsupported architecture '{name}'; registered: {known:?}")
     })?;
     arch.from_gguf(file, backend)

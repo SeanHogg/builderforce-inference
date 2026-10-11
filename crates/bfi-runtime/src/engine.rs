@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use bfi_core::Backend;
 use bfi_gguf::{GgufFile, ModelHeader};
 
@@ -159,20 +159,9 @@ impl Logits {
 
 /// Loaded model with its generation loop.
 pub struct Engine {
-    model: Box<dyn ModelTrait>,
+    model: Box<dyn bfi_models::Model>,
     tokenizer: Tokenizer,
     _backend: Arc<dyn Backend>,
-}
-
-/// Trait for model forward pass (implemented by bfi-models Model).
-pub trait ModelTrait: Send + Sync {
-    fn forward(&self, tokens: &[u32], pos: &[i32], state: &mut SeqState) -> Result<Logits>;
-    fn n_layer(&self) -> usize;
-    fn n_embd(&self) -> usize;
-    fn n_vocab(&self) -> usize;
-    fn n_ctx(&self) -> usize;
-    fn state_layout(&self) -> StateLayout;
-    fn architecture(&self) -> &'static str;
 }
 
 impl Engine {
@@ -180,9 +169,9 @@ impl Engine {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let gguf = GgufFile::open(path)?;
-        let backend = bfi_core::select_backend();
+        let backend: Arc<dyn Backend> = Arc::from(bfi_core::select_backend());
 
-        let model = bfi_models::load_model(&gguf, backend.clone())?;
+        let model = bfi_models::load_model(&gguf, Arc::clone(&backend))?;
 
         let header = gguf.header();
         let tokenizer = Tokenizer::from_header(header)?;
@@ -196,11 +185,12 @@ impl Engine {
 
     /// Run generation: encode, decode loop with sampling.
     pub fn generate(&mut self, prompt: &str, params: SampleParams) -> Result<String> {
-        let mut ids = self.tokenizer.encode(prompt, true)?;
+        let ids = self.tokenizer.encode(prompt, true)?;
+        let prompt_len = ids.len();
         let mut all_ids = ids.clone();
 
         let max_tokens = if params.max_tokens == 0 {
-            self.model.n_ctx()
+            self.model.n_ctx().saturating_sub(prompt_len)
         } else {
             params.max_tokens as usize
         };
@@ -208,12 +198,12 @@ impl Engine {
         let eos = self.tokenizer.eos();
 
         let layout = self.model.state_layout();
-        let mut state = SeqState::new(layout);
+        let mut state = bfi_models::SeqState::allocate(&layout);
+
+        let pos: Vec<i32> = (0..ids.len() as i32).collect();
+        let mut logits = self.model.forward(&ids, &pos, &mut state)?;
 
         for _ in 0..max_tokens {
-            let pos: Vec<i32> = (0..ids.len() as i32).collect();
-            let logits = self.model.forward(&ids, &pos, &mut state)?;
-
             let next = sample(logits.as_slice(), &all_ids, &params);
 
             if eos.map_or(false, |eos_id| next == eos_id) {
@@ -221,12 +211,11 @@ impl Engine {
             }
 
             all_ids.push(next);
-            ids = vec![next];
-            state.advance(1);
+            let pos = [state.n as i32];
+            logits = self.model.forward(&[next], &pos, &mut state)?;
         }
 
-        let generated = &all_ids[ids.len()..];
-        self.tokenizer.decode(generated)
+        self.tokenizer.decode(&all_ids[prompt_len..])
     }
 
     /// Access the tokenizer.

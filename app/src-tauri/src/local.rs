@@ -3,7 +3,7 @@
 //! with, and the compatible endpoint other AI tools use. Thin over `bf_local`.
 
 use crate::pool::blocking;
-use bf_local::{api, hub, ollama, Local};
+use bf_local::{api, hub, runtime, Local};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -20,14 +20,15 @@ fn e(err: impl std::fmt::Display) -> String {
 #[tauri::command]
 pub async fn local_state(local: State<'_, Arc<Local>>) -> Res<Value> {
     blocking(local, |l| {
+        l.apply_api();
         let base = l.base();
-        let version = ollama::version(&base);
+        let version = runtime::version(&base);
         let installed = match &version {
-            Some(_) => ollama::installed(&base).map_err(e)?,
+            Some(_) => runtime::installed(&base).map_err(e)?,
             None => Vec::new(),
         };
         Ok(json!({
-            "runtime": { "base": base, "version": version, "downloadUrl": ollama::DOWNLOAD_URL },
+            "runtime": { "base": base, "version": version, "error": l.runtime_error() },
             "installed": installed,
             "hub": hub::view(hub::total_memory()),
             "settings": l.settings.get(),
@@ -42,7 +43,7 @@ pub async fn local_state(local: State<'_, Arc<Local>>) -> Res<Value> {
 #[tauri::command]
 pub async fn local_pull(app: AppHandle, local: State<'_, Arc<Local>>, model: String) -> Res<()> {
     blocking(local, move |l| {
-        let result = ollama::pull(&l.base(), &model, |p| {
+        let result = runtime::pull(&l.base(), &model, |p| {
             let _ = app.emit(PULL_EVENT, json!({ "model": model, "status": p.status, "total": p.total, "completed": p.completed, "done": false }));
         });
         let error = result.as_ref().err().map(|err| format!("{err:#}"));
@@ -55,7 +56,7 @@ pub async fn local_pull(app: AppHandle, local: State<'_, Arc<Local>>, model: Str
 #[tauri::command]
 pub async fn local_delete(local: State<'_, Arc<Local>>, model: String) -> Res<()> {
     blocking(local, move |l| {
-        ollama::delete(&l.base(), &model).map_err(e)?;
+        runtime::delete(&l.base(), &model).map_err(e)?;
         // A removed model can no longer answer the Brain.
         if l.chat_model().as_deref() == Some(model.as_str()) {
             l.update(|s| s.chat_model = None).map_err(e)?;

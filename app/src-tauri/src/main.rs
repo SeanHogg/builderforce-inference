@@ -183,10 +183,13 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build Synapse");
 
-    app.run(move |_handle, event| {
+    app.run(move |handle, event| {
         if let RunEvent::Exit = event {
             if let Some(r) = &running {
                 r.stop();
+            }
+            if let Some(local) = handle.try_state::<Arc<bf_local::Local>>() {
+                local.stop();
             }
         }
     });

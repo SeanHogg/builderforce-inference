@@ -31,6 +31,11 @@ pub fn zeros_f32(shape: Vec<usize>) -> Tensor {
     f32_tensor(shape, vec![0.0; n])
 }
 
+pub fn ones_f32(shape: Vec<usize>) -> Tensor {
+    let n: usize = shape.iter().copied().product();
+    f32_tensor(shape, vec![1.0; n])
+}
+
 pub fn shape_of(t: &Tensor) -> &[usize] {
     t.shape.as_slice()
 }
@@ -122,4 +127,67 @@ pub fn prefix_rows(t: &Tensor, n: usize) -> anyhow::Result<Tensor> {
         vec![n, s[1], s[2]],
         data[..n * row].to_vec(),
     ))
+}
+
+/// Concatenate two F32 tensors along the last dimension.
+pub fn concat_last(a: &Tensor, b: &Tensor) -> anyhow::Result<Tensor> {
+    let sa = shape_of(a);
+    let sb = shape_of(b);
+    ensure!(!sa.is_empty() && !sb.is_empty(), "concat_last: empty shape");
+    ensure!(
+        sa.len() == sb.len(),
+        "concat_last rank {} vs {}",
+        sa.len(),
+        sb.len()
+    );
+    ensure!(
+        sa[..sa.len() - 1] == sb[..sb.len() - 1],
+        "concat_last leading dims {:?} vs {:?}",
+        sa,
+        sb
+    );
+    let da = *sa.last().unwrap();
+    let db = *sb.last().unwrap();
+    let rows: usize = sa[..sa.len() - 1].iter().copied().product();
+    let aa = as_f32(a)?;
+    let bb = as_f32(b)?;
+    let mut out = Vec::with_capacity(rows * (da + db));
+    for r in 0..rows {
+        out.extend_from_slice(&aa[r * da..(r + 1) * da]);
+        out.extend_from_slice(&bb[r * db..(r + 1) * db]);
+    }
+    let mut shape = sa.to_vec();
+    *shape.last_mut().unwrap() = da + db;
+    Ok(f32_tensor(shape, out))
+}
+
+/// Split `t` along the last dim into chunks of `sizes` (must sum to that dim).
+pub fn split_last(t: &Tensor, sizes: &[usize]) -> anyhow::Result<Vec<Tensor>> {
+    let s = shape_of(t);
+    ensure!(!s.is_empty(), "split_last: empty shape");
+    let last = *s.last().unwrap();
+    let sum: usize = sizes.iter().copied().sum();
+    ensure!(
+        sum == last,
+        "split_last sizes {sizes:?} sum {sum} != last dim {last}"
+    );
+    let rows: usize = if s.len() == 1 {
+        1
+    } else {
+        s[..s.len() - 1].iter().copied().product()
+    };
+    let data = as_f32(t)?;
+    let mut out = Vec::with_capacity(sizes.len());
+    for (idx, &sz) in sizes.iter().enumerate() {
+        let offset: usize = sizes[..idx].iter().copied().sum();
+        let mut part = Vec::with_capacity(rows * sz);
+        for r in 0..rows {
+            let start = r * last + offset;
+            part.extend_from_slice(&data[start..start + sz]);
+        }
+        let mut shape = s.to_vec();
+        *shape.last_mut().unwrap() = sz;
+        out.push(f32_tensor(shape, part));
+    }
+    Ok(out)
 }

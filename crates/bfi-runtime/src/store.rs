@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde::Deserialize;
 
 /// The model store directory: `~/.builderforce/models/`.
@@ -80,20 +80,20 @@ pub fn list_models() -> Result<Vec<InstalledModel>> {
 
     // Walk the models directory for .gguf files
     for entry in walkdir(&dir)? {
-        if let Some(ext) = entry.path().extension() {
+        if let Some(ext) = entry.path.extension() {
             if ext == "gguf" {
                 let name = entry
-                    .path()
+                    .path
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown")
                     .to_string();
 
-                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                let size = entry.metadata.len();
 
                 models.push(InstalledModel {
                     name,
-                    path: entry.path().to_path_buf(),
+                    path: entry.path,
                     size,
                 });
             }
@@ -189,7 +189,13 @@ mod tests {
     #[test]
     fn models_dir_default() {
         let dir = models_dir();
-        assert!(dir.to_string_lossy().ends_with(".builderforce/models"));
+        assert_eq!(dir.file_name().and_then(|s| s.to_str()), Some("models"));
+        assert_eq!(
+            dir.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str()),
+            Some(".builderforce")
+        );
     }
 
     #[test]

@@ -101,6 +101,9 @@ fn handle(mut req: Request, key: &str, upstream: &str) {
     }
     let method = req.method().clone();
     let mut call = ureq::request(method.as_str(), &format!("{upstream}{path}")).timeout(UPSTREAM_TIMEOUT);
+    if let Some(auth) = crate::runtime::authorization() {
+        call = call.set("Authorization", &auth);
+    }
     for name in FORWARDED {
         if let Some(v) = header(&req, name) {
             call = call.set(name, &v);

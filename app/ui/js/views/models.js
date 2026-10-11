@@ -1,7 +1,7 @@
-// Local models: the runtime Synapse manages (Ollama), which model the Brain answers with,
+// Local models: the runtime Synapse supervises (bfi), which model the Brain answers with,
 // the models installed, the hub of models sized for this machine (the quantization that
 // fits its memory is chosen for each), and the compatible endpoint other AI tools use.
-import { copyText, h, invoke, listen, opener, showError } from "../bridge.js";
+import { copyText, h, invoke, listen, showError } from "../bridge.js";
 import { bytes, num, t } from "../i18n.js";
 
 /** Downloads in flight, by model tag: `{ status, total, completed }`. Kept across renders. */
@@ -17,12 +17,8 @@ function runtimeCard(s, reload) {
     { class: "card stack" },
     h("h2", { text: t("models.runtimeMissingTitle") }),
     h("p", { class: "muted", text: t("models.runtimeMissingBody") }),
-    h(
-      "div",
-      { class: "row wrap" },
-      h("button", { class: "primary", text: t("models.getOllama"), on: { click: () => opener.openUrl(rt.downloadUrl) } }),
-      h("button", { class: "ghost", text: t("models.checkAgain"), on: { click: reload } }),
-    ),
+    rt.error && h("p", { class: "error-inline", text: rt.error }),
+    h("div", { class: "row wrap" }, h("button", { class: "ghost", text: t("models.checkAgain"), on: { click: reload } })),
   );
 }
 

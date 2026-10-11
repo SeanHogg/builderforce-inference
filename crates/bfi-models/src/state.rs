@@ -1,7 +1,7 @@
 //! Sequence state the runtime allocates from [`StateLayout`].
 //!
-//! qwen3 uses a per-layer KV cache only. Recurrent (gated-delta) slots exist so
-//! M3 (`qwen35`) can fill them without changing this type.
+//! qwen3 uses a per-layer KV cache only (`n_recurrent = 0`). qwen35 fills
+//! [`SeqState::recurrent`] for gated-delta layers (`n_recurrent > 0`).
 
 use bfi_core::Tensor;
 
@@ -57,7 +57,16 @@ impl SeqState {
         let v = (0..layout.n_layer)
             .map(|_| tutil::zeros_f32(kv_shape.clone()))
             .collect();
-        let recurrent = (0..layout.n_layer).map(|_| None).collect();
+        let rec_shape = layout.recurrent_shape;
+        let recurrent = (0..layout.n_layer)
+            .map(|_| {
+                if layout.n_recurrent > 0 && rec_shape.iter().all(|&d| d > 0) {
+                    Some(tutil::zeros_f32(rec_shape.to_vec()))
+                } else {
+                    None
+                }
+            })
+            .collect();
         Self {
             n: 0,
             k,

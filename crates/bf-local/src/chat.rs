@@ -14,13 +14,17 @@ pub fn stream_chat(base: &str, model: &str, body: &Value, on_text: impl FnMut(&s
     let mut body = body.clone();
     body["model"] = json!(model);
     body["stream"] = json!(true);
-    let resp = match ureq::post(&format!("{base}/v1/chat/completions")).timeout(TURN_TIMEOUT).send_json(body) {
+    let mut req = ureq::post(&format!("{base}/v1/chat/completions")).timeout(TURN_TIMEOUT);
+    if let Some(auth) = crate::runtime::authorization() {
+        req = req.set("Authorization", &auth);
+    }
+    let resp = match req.send_json(body) {
         Ok(r) => r,
         Err(ureq::Error::Status(code, r)) => {
             let text = r.into_string().unwrap_or_default();
             return Err(anyhow!("the local model answered {code}: {}", text.chars().take(300).collect::<String>()));
         }
-        Err(ureq::Error::Transport(t)) => return Err(anyhow!("the local runtime is not answering ({t}); is Ollama running?")),
+        Err(ureq::Error::Transport(t)) => return Err(anyhow!("the local runtime is not answering ({t})")),
     };
     let whole_json = resp.content_type() == "application/json";
     read_turn(whole_json, resp.into_reader(), on_text).map_err(|e| anyhow!("the local model failed mid-answer: {e}"))

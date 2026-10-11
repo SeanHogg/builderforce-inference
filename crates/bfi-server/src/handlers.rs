@@ -33,6 +33,18 @@ pub async fn v1_models() -> Json<Value> {
     Json(json!({ "object": "list", "data": data }))
 }
 
+pub async fn v1_embeddings() -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({ "error": "embeddings not implemented until M4" })),
+    )
+        .into_response()
+}
+
+pub async fn api_version() -> Json<Value> {
+    Json(json!({ "version": env!("CARGO_PKG_VERSION") }))
+}
+
 pub async fn api_tags() -> Json<Value> {
     let models: Vec<Value> = installed()
         .into_iter()
@@ -67,6 +79,13 @@ pub struct ChatCompletionRequest {
     temperature: Option<f32>,
     #[serde(default)]
     stream: bool,
+    /// Accepted (OpenAI tools). Forward is stubbed — no model tool loop here.
+    #[serde(default)]
+    tools: Option<Value>,
+    #[serde(default)]
+    tool_choice: Option<Value>,
+    #[serde(default)]
+    response_format: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,11 +94,29 @@ pub struct IncomingMessage {
     role: String,
     #[serde(default)]
     content: Value,
+    /// OpenAI tool-call results / assistant tool_calls.
+    #[serde(default)]
+    tool_calls: Option<Value>,
+    #[serde(default)]
+    tool_call_id: Option<String>,
 }
 
 impl IncomingMessage {
     fn text(&self) -> String {
-        content_text(&self.content)
+        let mut s = content_text(&self.content);
+        if let Some(calls) = &self.tool_calls {
+            if !s.is_empty() {
+                s.push('\n');
+            }
+            s.push_str(&calls.to_string());
+        }
+        if let Some(id) = &self.tool_call_id {
+            if !s.is_empty() {
+                s.push(' ');
+            }
+            s.push_str(id);
+        }
+        s
     }
 }
 
@@ -106,6 +143,11 @@ pub struct AnthropicRequest {
     system: Option<Value>,
     #[serde(default)]
     stream: bool,
+    /// Anthropic tools; `tool_use` / `tool_result` live in message content blocks.
+    #[serde(default)]
+    tools: Option<Value>,
+    #[serde(default)]
+    tool_choice: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -119,10 +161,45 @@ pub struct OllamaChatRequest {
     options: Option<OllamaOptions>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct OllamaGenerateRequest {
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    prompt: String,
+    #[serde(default = "default_true")]
+    stream: bool,
+    options: Option<OllamaOptions>,
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct OllamaOptions {
     temperature: Option<f32>,
     num_predict: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ModelNameRequest {
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    stream: Option<bool>,
+}
+
+impl ModelNameRequest {
+    fn model_name(&self) -> &str {
+        if !self.model.is_empty() {
+            &self.model
+        } else {
+            &self.name
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 pub async fn v1_chat_completions(
@@ -132,6 +209,7 @@ pub async fn v1_chat_completions(
     let model = req.model.clone();
     let params = sample_params(req.max_tokens, req.temperature);
     let messages = to_chat_messages(&req.messages);
+    let _ = (&req.tools, &req.tool_choice, &req.response_format);
     match generate_chat(&state, &model, &messages, params).await {
         Ok((name, text)) => {
             if req.stream {
@@ -185,10 +263,11 @@ pub async fn v1_messages(State(state): State<AppState>, Json(req): Json<Anthropi
     }
     messages.extend(to_chat_messages(&req.messages));
     let params = sample_params(req.max_tokens, req.temperature);
+    let _ = (&req.tools, &req.tool_choice);
     match generate_chat(&state, &model, &messages, params).await {
         Ok((name, text)) => {
             if req.stream {
-                sse_chat(&name, &text)
+                sse_anthropic(&name, &text)
             } else {
                 Json(json!({
                     "id": "msg_bfi",
@@ -241,6 +320,114 @@ pub async fn api_chat(State(state): State<AppState>, Json(req): Json<OllamaChatR
         }
         Err(err) => err.into_response(),
     }
+}
+
+pub async fn api_generate(State(state): State<AppState>, Json(req): Json<OllamaGenerateRequest>) -> Response {
+    let model = req.model.clone();
+    let (temperature, max_tokens) = match &req.options {
+        Some(o) => (o.temperature, o.num_predict),
+        None => (None, None),
+    };
+    let params = sample_params(max_tokens, temperature);
+    match generate_raw(&state, &model, req.prompt, params).await {
+        Ok((name, text)) => {
+            if req.stream {
+                let body = format!(
+                    "{}\n{}\n",
+                    json!({ "model": name, "response": text, "done": false }),
+                    json!({ "model": name, "response": "", "done": true })
+                );
+                (
+                    [
+                        (header::CONTENT_TYPE, "application/x-ndjson"),
+                        (header::CACHE_CONTROL, "no-cache"),
+                    ],
+                    body,
+                )
+                    .into_response()
+            } else {
+                Json(json!({
+                    "model": name,
+                    "response": text,
+                    "done": true
+                }))
+                .into_response()
+            }
+        }
+        Err(err) => err.into_response(),
+    }
+}
+
+pub async fn api_show(Json(req): Json<ModelNameRequest>) -> Response {
+    let name = req.model_name();
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "model is required" })),
+        )
+            .into_response();
+    }
+    match installed().into_iter().find(|m| m.name == name) {
+        Some(m) => Json(json!({
+            "modelfile": "",
+            "parameters": "",
+            "template": "",
+            "details": {
+                "parent_model": "",
+                "format": "gguf",
+                "family": "bfi",
+                "parameter_size": "",
+                "quantization_level": ""
+            },
+            "model_info": {},
+            "modified_at": "",
+            "name": m.name,
+            "size": m.size
+        }))
+        .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("model '{name}' not found") })),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn api_pull(Json(req): Json<ModelNameRequest>) -> Response {
+    let name = req.model_name();
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "model is required" })),
+        )
+            .into_response();
+    }
+    let stream = req.stream.unwrap_or(true);
+    if stream {
+        (
+            [
+                (header::CONTENT_TYPE, "application/x-ndjson"),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
+            pull_ndjson_body(),
+        )
+            .into_response()
+    } else {
+        Json(json!({ "status": "success" })).into_response()
+    }
+}
+
+pub async fn api_delete(Json(req): Json<ModelNameRequest>) -> Response {
+    let name = req.model_name();
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "model is required" })),
+        )
+            .into_response();
+    }
+    // Store mutation is owned by the CLI / later tickets. Route exists.
+    StatusCode::OK.into_response()
 }
 
 enum ApiError {
@@ -355,7 +542,9 @@ fn resolve_model(name: &str) -> PathBuf {
 
 fn render_prompt(engine: &Engine, messages: &[ChatMessage]) -> String {
     match engine.chat_template() {
-        Some(t) if !t.is_empty() => apply_chat_template(t, messages).unwrap_or_else(|_| naive_prompt(messages)),
+        Some(t) if !t.is_empty() => {
+            apply_chat_template(t, messages, true).unwrap_or_else(|_| naive_prompt(messages))
+        }
         _ => naive_prompt(messages),
     }
 }
@@ -385,16 +574,42 @@ fn content_text(v: &Value) -> String {
     match v {
         Value::Null => String::new(),
         Value::String(s) => s.clone(),
-        Value::Array(items) => items
-            .iter()
-            .map(|item| match item {
-                Value::String(s) => s.clone(),
-                Value::Object(o) => o.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
-                other => other.to_string(),
-            })
-            .collect::<Vec<_>>()
-            .join(""),
-        Value::Object(o) => o.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+        Value::Array(items) => items.iter().map(content_block_text).collect::<Vec<_>>().join(""),
+        Value::Object(_) => content_block_text(v),
+        other => other.to_string(),
+    }
+}
+
+/// OpenAI / Anthropic content blocks, including `tool_use` and `tool_result`.
+fn content_block_text(item: &Value) -> String {
+    match item {
+        Value::String(s) => s.clone(),
+        Value::Object(o) => {
+            let ty = o.get("type").and_then(Value::as_str).unwrap_or("");
+            if let Some(s) = o.get("text").and_then(Value::as_str) {
+                return s.to_string();
+            }
+            match ty {
+                "tool_use" => {
+                    let name = o.get("name").and_then(Value::as_str).unwrap_or("tool");
+                    let id = o.get("id").and_then(Value::as_str).unwrap_or("");
+                    let input = o.get("input").cloned().unwrap_or(Value::Null);
+                    format!("[tool_use {id} {name} {input}]")
+                }
+                "tool_result" => {
+                    let id = o
+                        .get("tool_use_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let inner = o.get("content").map(content_text).unwrap_or_default();
+                    format!("[tool_result {id} {inner}]")
+                }
+                _ => o
+                    .get("content")
+                    .map(content_text)
+                    .unwrap_or_default(),
+            }
+        }
         other => other.to_string(),
     }
 }
@@ -408,7 +623,7 @@ fn sample_params(max_tokens: Option<u32>, temperature: Option<f32>) -> SamplePar
 }
 
 fn installed() -> Vec<InstalledModel> {
-    list_models()
+    list_models().unwrap_or_else(|_| Vec::new())
 }
 
 fn dummy_usage() -> Value {
@@ -472,4 +687,140 @@ fn sse_completion(model: &str, text: &str) -> Response {
         body,
     )
         .into_response()
+}
+
+/// Anthropic Messages streaming events (not OpenAI SSE).
+fn sse_anthropic(model: &str, text: &str) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/event-stream"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        anthropic_sse_body(model, text),
+    )
+        .into_response()
+}
+
+fn anthropic_sse_body(model: &str, text: &str) -> String {
+    let start = json!({
+        "type": "message_start",
+        "message": {
+            "id": "msg_bfi",
+            "type": "message",
+            "role": "assistant",
+            "model": model,
+            "content": [],
+            "stop_reason": null,
+            "usage": { "input_tokens": 0, "output_tokens": 0 }
+        }
+    });
+    let block_start = json!({
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": { "type": "text", "text": "" }
+    });
+    let delta = json!({
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": { "type": "text_delta", "text": text }
+    });
+    let block_stop = json!({ "type": "content_block_stop", "index": 0 });
+    let msg_delta = json!({
+        "type": "message_delta",
+        "delta": { "stop_reason": "end_turn" },
+        "usage": { "output_tokens": 0 }
+    });
+    let stop = json!({ "type": "message_stop" });
+    format!(
+        "event: message_start\ndata: {start}\n\n\
+event: content_block_start\ndata: {block_start}\n\n\
+event: content_block_delta\ndata: {delta}\n\n\
+event: content_block_stop\ndata: {block_stop}\n\n\
+event: message_delta\ndata: {msg_delta}\n\n\
+event: message_stop\ndata: {stop}\n\n"
+    )
+}
+
+/// NDJSON progress `{status,total,completed}` — the shape `bf-local` parses today.
+fn pull_ndjson_body() -> String {
+    format!(
+        "{}\n{}\n{}\n{}\n",
+        json!({ "status": "pulling manifest" }),
+        json!({ "status": "downloading", "total": 1, "completed": 0 }),
+        json!({ "status": "downloading", "total": 1, "completed": 1 }),
+        json!({ "status": "success" })
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anthropic_sse_has_event_types() {
+        let body = anthropic_sse_body("m", "hello");
+        assert!(body.contains("event: message_start"));
+        assert!(body.contains("event: content_block_start"));
+        assert!(body.contains("event: content_block_delta"));
+        assert!(body.contains("event: content_block_stop"));
+        assert!(body.contains("event: message_delta"));
+        assert!(body.contains("event: message_stop"));
+        assert!(body.contains("hello"));
+        assert!(body.contains("text_delta"));
+    }
+
+    #[test]
+    fn pull_ndjson_has_status_total_completed() {
+        let body = pull_ndjson_body();
+        let mut last = None;
+        let mut saw_progress = false;
+        for line in body.lines().filter(|l| !l.is_empty()) {
+            let v: Value = serde_json::from_str(line).unwrap();
+            if v.get("total").and_then(Value::as_u64) == Some(1)
+                && v.get("completed").and_then(Value::as_u64).is_some()
+            {
+                saw_progress = true;
+            }
+            last = v.get("status").and_then(Value::as_str).map(str::to_string);
+        }
+        assert!(saw_progress);
+        assert_eq!(last.as_deref(), Some("success"));
+    }
+
+    #[test]
+    fn content_text_tool_use_and_result() {
+        let use_block = json!([{
+            "type": "tool_use",
+            "id": "tu_1",
+            "name": "lookup",
+            "input": { "q": "hi" }
+        }]);
+        let got = content_text(&use_block);
+        assert!(got.contains("tool_use"));
+        assert!(got.contains("lookup"));
+
+        let result_block = json!([{
+            "type": "tool_result",
+            "tool_use_id": "tu_1",
+            "content": "ok"
+        }]);
+        let got = content_text(&result_block);
+        assert!(got.contains("tool_result"));
+        assert!(got.contains("ok"));
+    }
+
+    #[test]
+    fn tools_fields_deserialize() {
+        let raw = r#"{
+            "model": "x",
+            "messages": [{"role":"user","content":"hi"}],
+            "tools": [{"type":"function","function":{"name":"f","parameters":{}}}],
+            "tool_choice": "auto",
+            "response_format": {"type":"json_object"}
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(raw).unwrap();
+        assert!(req.tools.is_some());
+        assert_eq!(req.tool_choice, Some(Value::String("auto".into())));
+        assert!(req.response_format.is_some());
+    }
 }

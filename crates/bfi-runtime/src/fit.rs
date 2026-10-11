@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use bfi_gguf::{GgufFile, ModelHeader};
 
 /// Memory breakdown for a model at a given context size.
@@ -127,7 +127,7 @@ fn model_layout(header: &ModelHeader) -> Result<ModelLayout> {
 
     let head_dim = header
         .get_u64(&format!("{}.attention.head_dim", arch))
-        .unwrap_or(n_embd / n_kv_heads.max(1) as u64) as usize;
+        .unwrap_or((n_embd as u64) / (n_kv_heads.max(1) as u64)) as usize;
 
     // Note: M3 will add logic to detect delta-net layers from GGUF metadata.
     // Currently treating all layers as full-attention.
@@ -145,11 +145,7 @@ fn model_layout(header: &ModelHeader) -> Result<ModelLayout> {
 }
 
 fn find_max_ctx(layout: &ModelLayout, weights: u64, budget: u64) -> usize {
-    // Simple search for max context
-    // Start with some reasonable values
-    let mut ctx = 256usize;
-
-    // Quick binary search
+    // Binary search for the largest context that still fits.
     let mut low = 128usize;
     let mut high = 262144usize; // 256K max
 

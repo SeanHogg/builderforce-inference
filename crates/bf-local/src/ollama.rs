@@ -1,6 +1,7 @@
-//! The local runtime Synapse manages: Ollama. Synapse does not bundle an inference
-//! engine — Ollama already does GPU detection, quantized weights and serving on every
-//! OS — it finds the runtime, installs and removes models in it, and routes to it.
+//! Deprecated fallback: the Ollama runtime Synapse used before [`crate::runtime`].
+//! Kept until the bfi supervisor is the default everywhere. Select with
+//! `SYNAPSE_USE_OLLAMA=1`. Do not delete this module until `runtime` compiles and
+//! is wired through.
 //!
 //! Address: `OLLAMA_HOST` when set (as Ollama itself reads it), else `127.0.0.1:11434`.
 
