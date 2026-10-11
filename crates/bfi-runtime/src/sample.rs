@@ -1,4 +1,5 @@
-//! Token sampler: greedy, temperature, top-k/p, min-p, repetition penalty.
+//! Token sampler: greedy, temperature, top-k/p, min-p, repetition penalty,
+//! and a small constrained-decode mask (GBNF subset / JSON object).
 
 use std::collections::HashSet;
 
@@ -17,6 +18,10 @@ pub struct SampleParams {
     /// Presence penalty (applied after repeat penalty). 0 = no penalty.
     pub presence_penalty: f32,
     pub seed: u64,
+    /// GBNF grammar. Only a documented subset is enforced (see [`apply_constraint`]).
+    pub grammar: Option<String>,
+    /// OpenAI `response_format: json_object` — decoded text must stay a JSON-object prefix.
+    pub json_object: bool,
 }
 
 impl Default for SampleParams {
@@ -30,8 +35,151 @@ impl Default for SampleParams {
             repeat_penalty: 1.0,
             presence_penalty: 0.0,
             seed: 0,
+            grammar: None,
+            json_object: false,
         }
     }
+}
+
+/// Constrained decoding (M4).
+///
+/// Grammar subset understood here (not full GBNF):
+/// - `root ::= id(N) | id(M) | ...` — only those token ids may be sampled
+///   (no tokenizer; used by unit tests and as an escape hatch).
+/// - `root ::= "literal"` — decoded pieces must stay a prefix of `literal`
+///   (needs [`apply_constraint`] + a decode fn; Engine passes tokenizer.decode).
+/// - `json_object: true` — decoded text must remain a prefix of a JSON object
+///   `{ ... }`. Brace/string scan only; not JSON Schema.
+///
+/// Anything else is treated as unconstrained (full GBNF is out of scope).
+pub fn apply_constraint(
+    logits: &mut [f32],
+    generated: &[u32],
+    p: &SampleParams,
+    decode: impl Fn(u32) -> String,
+) {
+    if p.grammar.is_none() && !p.json_object {
+        return;
+    }
+    if let Some(g) = p.grammar.as_deref() {
+        if let Some(allowed) = parse_id_union(g) {
+            for (i, l) in logits.iter_mut().enumerate() {
+                if !allowed.contains(&(i as u32)) {
+                    *l = f32::NEG_INFINITY;
+                }
+            }
+            return;
+        }
+    }
+    let so_far: String = generated.iter().map(|&id| decode(id)).collect();
+    for (i, l) in logits.iter_mut().enumerate() {
+        let piece = decode(i as u32);
+        if !token_allowed(&so_far, &piece, p) {
+            *l = f32::NEG_INFINITY;
+        }
+    }
+}
+
+fn token_allowed(so_far: &str, piece: &str, p: &SampleParams) -> bool {
+    let next = format!("{so_far}{piece}");
+    if p.json_object && !json_object_prefix_ok(&next) {
+        return false;
+    }
+    if let Some(g) = p.grammar.as_deref() {
+        if parse_id_union(g).is_some() {
+            return true;
+        }
+        if let Some(lit) = parse_literal_root(g) {
+            return lit.starts_with(&next);
+        }
+    }
+    true
+}
+
+/// `root ::= id(1) | id(2)` — token-id union, no tokenizer required.
+fn parse_id_union(g: &str) -> Option<HashSet<u32>> {
+    let rest = strip_root(g)?;
+    let mut set = HashSet::new();
+    for part in rest.split('|') {
+        let p = part.trim();
+        let inner = p.strip_prefix("id(")?.strip_suffix(')')?.trim();
+        set.insert(inner.parse().ok()?);
+    }
+    if set.is_empty() {
+        None
+    } else {
+        Some(set)
+    }
+}
+
+/// `root ::= "hello"` — character-literal (no escapes besides the closing quote).
+fn parse_literal_root(g: &str) -> Option<String> {
+    let rest = strip_root(g)?;
+    let rest = rest.strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+fn strip_root(g: &str) -> Option<&str> {
+    let s = g.trim();
+    let rest = s.strip_prefix("root")?.trim();
+    Some(rest.strip_prefix("::=")?.trim())
+}
+
+/// True if `s` is empty/whitespace, a complete JSON object, or a brace-balanced
+/// prefix of one (incomplete strings allowed). First non-ws char must be `{`.
+fn json_object_prefix_ok(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() && b[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i == b.len() {
+        return true;
+    }
+    if b[i] != b'{' {
+        return false;
+    }
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    while i < b.len() {
+        let c = b[i];
+        if in_string {
+            if escape {
+                escape = false;
+            } else if c == b'\\' {
+                escape = true;
+            } else if c == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'"' => in_string = true,
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+                if depth == 0 {
+                    i += 1;
+                    while i < b.len() {
+                        if !b[i].is_ascii_whitespace() {
+                            return false;
+                        }
+                        i += 1;
+                    }
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    in_string || escape || depth > 0
 }
 
 /// Sample a token id from `logits`. Greedy when `temperature == 0`.
@@ -39,6 +187,14 @@ pub fn sample(logits: &[f32], prev: &[u32], p: &SampleParams) -> u32 {
     if logits.is_empty() {
         return 0;
     }
+
+    let mut masked: Vec<f32> = logits.to_vec();
+    if let Some(g) = p.grammar.as_deref() {
+        if parse_id_union(g).is_some() {
+            apply_constraint(&mut masked, prev, p, |_| String::new());
+        }
+    }
+    let logits = masked.as_slice();
 
     let mut vals: Vec<(u32, f32)> = logits
         .iter()
@@ -113,10 +269,7 @@ pub fn sample(logits: &[f32], prev: &[u32], p: &SampleParams) -> u32 {
     }
 
     if p.min_p > 0.0 {
-        let max_p = vals
-            .iter()
-            .map(|(_, pr)| *pr)
-            .fold(0.0f32, f32::max);
+        let max_p = vals.iter().map(|(_, pr)| *pr).fold(0.0f32, f32::max);
         let thresh = p.min_p * max_p;
         vals.retain(|(_, pr)| *pr >= thresh);
         if vals.is_empty() {
@@ -201,7 +354,66 @@ mod tests {
         assert_eq!(p.repeat_penalty, 1.0);
         assert_eq!(p.presence_penalty, 0.0);
         assert_eq!(p.seed, 0);
+        assert!(p.grammar.is_none());
+        assert!(!p.json_object);
         assert_eq!(sample(&[1.0, 0.0, 0.5], &[], &p), 0);
+    }
+
+    #[test]
+    fn sample_params_carries_grammar() {
+        let p = SampleParams {
+            grammar: Some("root ::= id(1)".into()),
+            json_object: true,
+            ..Default::default()
+        };
+        assert_eq!(p.grammar.as_deref(), Some("root ::= id(1)"));
+        assert!(p.json_object);
+    }
+
+    #[test]
+    fn grammar_id_mask_rejects_forbidden_token() {
+        let p = SampleParams {
+            temperature: 0.0,
+            grammar: Some("root ::= id(1)".into()),
+            ..Default::default()
+        };
+        // token 0 has the highest logit but is forbidden
+        assert_eq!(sample(&[9.0, 1.0, 8.0], &[], &p), 1);
+    }
+
+    #[test]
+    fn json_object_constraint_invoked() {
+        let p = SampleParams {
+            json_object: true,
+            temperature: 0.0,
+            ..Default::default()
+        };
+        // token 0 = "x" (illegal first char), token 1 = "{"
+        let decode = |id: u32| if id == 1 { "{".into() } else { "x".into() };
+        let mut logits = [9.0, 1.0];
+        apply_constraint(&mut logits, &[], &p, decode);
+        assert_eq!(sample(&logits, &[], &p), 1);
+    }
+
+    #[test]
+    fn literal_grammar_stays_on_prefix() {
+        let p = SampleParams {
+            grammar: Some(r#"root ::= "ab""#.into()),
+            temperature: 0.0,
+            ..Default::default()
+        };
+        let decode = |id: u32| match id {
+            0 => "a".into(),
+            1 => "z".into(),
+            2 => "b".into(),
+            _ => String::new(),
+        };
+        let mut logits = [1.0, 9.0, 2.0];
+        apply_constraint(&mut logits, &[], &p, decode);
+        assert_eq!(sample(&logits, &[], &p), 0);
+        let mut logits2 = [1.0, 9.0, 2.0];
+        apply_constraint(&mut logits2, &[0], &p, decode);
+        assert_eq!(sample(&logits2, &[0], &p), 2);
     }
 
     #[test]

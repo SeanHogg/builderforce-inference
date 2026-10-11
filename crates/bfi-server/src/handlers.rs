@@ -33,12 +33,16 @@ pub async fn v1_models() -> Json<Value> {
     Json(json!({ "object": "list", "data": data }))
 }
 
-pub async fn v1_embeddings() -> Response {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({ "error": "embeddings not implemented until M4" })),
-    )
-        .into_response()
+pub async fn v1_embeddings(
+    State(state): State<AppState>,
+    Json(req): Json<EmbeddingsRequest>,
+) -> Response {
+    let model = req.model.clone();
+    let texts = req.input.texts();
+    match embed_texts(&state, model, texts).await {
+        Ok((name, vectors)) => Json(openai_embeddings(&name, &vectors)).into_response(),
+        Err(err) => err.into_response(),
+    }
 }
 
 pub async fn api_version() -> Json<Value> {
@@ -67,6 +71,29 @@ pub async fn api_ps(State(state): State<AppState>) -> Json<Value> {
         None => Vec::new(),
     };
     Json(json!({ "models": models }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EmbeddingsRequest {
+    #[serde(default)]
+    model: String,
+    input: EmbeddingsInput,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum EmbeddingsInput {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl EmbeddingsInput {
+    fn texts(&self) -> Vec<String> {
+        match self {
+            Self::One(s) => vec![s.clone()],
+            Self::Many(v) => v.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -287,9 +314,10 @@ pub async fn v1_chat_completions(
         }
     };
     let model = req.model.clone();
-    let params = sample_params(req.max_tokens, req.temperature);
+    let mut params = sample_params(req.max_tokens, req.temperature);
+    apply_output_constraint(&mut params, constraint, req.grammar.as_deref());
     let messages = to_chat_messages(&req.messages);
-    let _ = (&req.tools, &req.tool_choice, constraint);
+    let _ = (&req.tools, &req.tool_choice);
     match generate_chat(&state, &model, &messages, params).await {
         Ok((name, text)) => {
             if req.stream {
@@ -578,6 +606,30 @@ async fn generate_raw(
     .map_err(|e| ApiError::Generate(e.to_string()))?
 }
 
+async fn embed_texts(
+    state: &AppState,
+    model: String,
+    texts: Vec<String>,
+) -> Result<(String, Vec<Vec<f32>>), ApiError> {
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut slot = state.inner.engine.lock();
+        ensure_loaded(&mut slot, state.inner.model_path.as_deref(), &model)?;
+        let loaded = slot.as_mut().ok_or(ApiError::NoModel)?;
+        let mut vectors = Vec::with_capacity(texts.len());
+        for t in &texts {
+            let v = loaded
+                .engine
+                .embed(t)
+                .map_err(|e| ApiError::Generate(e.to_string()))?;
+            vectors.push(v);
+        }
+        Ok((loaded.name.clone(), vectors))
+    })
+    .await
+    .map_err(|e| ApiError::Generate(e.to_string()))?
+}
+
 fn ensure_loaded(slot: &mut Option<Loaded>, configured: Option<&Path>, model: &str) -> Result<(), ApiError> {
     if let Some(loaded) = slot.as_ref() {
         if configured.is_some() {
@@ -694,6 +746,25 @@ fn content_block_text(item: &Value) -> String {
     }
 }
 
+fn apply_output_constraint(
+    params: &mut SampleParams,
+    c: OutputConstraint,
+    grammar: Option<&str>,
+) {
+    match c {
+        OutputConstraint::Free => {}
+        OutputConstraint::JsonObject | OutputConstraint::JsonSchema => {
+            params.json_object = true;
+        }
+        OutputConstraint::Grammar => {
+            params.grammar = grammar
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+        }
+    }
+}
+
 fn sample_params(max_tokens: Option<u32>, temperature: Option<f32>) -> SampleParams {
     SampleParams {
         max_tokens: max_tokens.unwrap_or(256),
@@ -715,6 +786,25 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn openai_embeddings(model: &str, vectors: &[Vec<f32>]) -> Value {
+    json!({
+        "object": "list",
+        "data": vectors
+            .iter()
+            .enumerate()
+            .map(|(i, embedding)| {
+                json!({
+                    "object": "embedding",
+                    "embedding": embedding,
+                    "index": i,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "model": model,
+        "usage": { "prompt_tokens": 0, "total_tokens": 0 },
+    })
 }
 
 fn openai_chat(model: &str, text: &str) -> Value {
@@ -835,6 +925,32 @@ fn pull_ndjson_body() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apply_constraint_json_object_sets_flag() {
+        let mut p = SampleParams::default();
+        apply_output_constraint(&mut p, OutputConstraint::JsonObject, None);
+        assert!(p.json_object);
+        assert!(p.grammar.is_none());
+    }
+
+    #[test]
+    fn apply_constraint_grammar_copies_string() {
+        let mut p = SampleParams::default();
+        apply_output_constraint(&mut p, OutputConstraint::Grammar, Some("root ::= \"a\""));
+        assert_eq!(p.grammar.as_deref(), Some("root ::= \"a\""));
+        assert!(!p.json_object);
+    }
+
+    #[test]
+    fn openai_embeddings_shape() {
+        let v = openai_embeddings("m", &[vec![0.5_f32, 1.0]]);
+        assert_eq!(v["object"], "list");
+        assert_eq!(v["data"][0]["object"], "embedding");
+        assert_eq!(v["data"][0]["index"], 0);
+        assert!(v["data"][0]["embedding"].is_array());
+        assert_eq!(v["data"][0]["embedding"].as_array().unwrap().len(), 2);
+    }
 
     #[test]
     fn anthropic_sse_has_event_types() {

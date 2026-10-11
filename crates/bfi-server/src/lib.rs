@@ -407,10 +407,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn embeddings_is_501() {
+    async fn embeddings_without_model_is_503() {
         let app = router(AppState::new(ServerConfig::default()));
         let res = send(app, "POST", "/v1/embeddings", r#"{"input":"hi"}"#, None).await;
-        assert_eq!(res.status(), StatusCode::NOT_IMPLEMENTED);
+        let (status, v) = body_json(res).await;
+        assert_ne!(status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(v["error"], "no model loaded");
+    }
+
+    #[test]
+    fn embeddings_response_shape_has_data_embedding() {
+        let v = serde_json::json!({
+            "object": "list",
+            "data": [{ "object": "embedding", "embedding": [0.1, 0.2], "index": 0 }],
+            "model": "m",
+        });
+        assert!(v["data"][0]["embedding"].is_array());
+        assert_eq!(v["data"][0]["object"], "embedding");
     }
 
     #[tokio::test]
