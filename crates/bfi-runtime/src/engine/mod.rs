@@ -258,6 +258,18 @@ impl Engine {
         self.tokenizer.decode(&all_ids[prompt_len..])
     }
 
+    /// Run each prompt on this engine without reloading the model.
+    ///
+    /// Sequential reuse of `self` (same loaded weights). Concurrent token
+    /// mixing / paged attention is out of scope.
+    pub fn generate_batch(
+        &mut self,
+        prompts: &[&str],
+        params: SampleParams,
+    ) -> Result<Vec<String>> {
+        run_queued(prompts, |p| self.generate(p, params.clone()))
+    }
+
     /// Tokens actually forwarded through the model (prefix-cache misses).
     pub fn forwarded_tokens(&self) -> u64 {
         self.prefix_cache.forwarded()
@@ -303,6 +315,21 @@ impl Engine {
     pub fn n_embd(&self) -> usize {
         self.model.n_embd()
     }
+}
+
+/// Run `prompts` in order on the same generator (no model reload).
+///
+/// Smallest continuous-batching scheduler: sequential reuse of one `FnMut`.
+/// Concurrent token mixing / paged attention is out of scope.
+pub fn run_queued<F, E>(prompts: &[&str], mut generate: F) -> Result<Vec<String>, E>
+where
+    F: FnMut(&str) -> Result<String, E>,
+{
+    let mut out = Vec::with_capacity(prompts.len());
+    for prompt in prompts {
+        out.push(generate(prompt)?);
+    }
+    Ok(out)
 }
 
 /// Mean-pool token rows. If `table` is `[n_vocab, dim]`, use those rows;
@@ -366,5 +393,35 @@ mod tests {
         assert_eq!(a.len(), 3);
         let c = mean_pool_ids(&[9], 3, None);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn run_queued_two_prompts_reuses_same_generator() {
+        let mut calls = 0u32;
+        let out = run_queued(&["hello", "world"], |p| {
+            calls += 1;
+            Ok::<_, &'static str>(format!("{calls}:{p}"))
+        })
+        .unwrap();
+        assert_eq!(out, vec!["1:hello".to_string(), "2:world".to_string()]);
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn run_queued_empty_is_empty() {
+        let out = run_queued(&[], |_p| Ok::<_, &'static str>(String::new())).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn run_queued_stops_on_first_error() {
+        let mut calls = 0u32;
+        let err = run_queued(&["a", "b"], |_| {
+            calls += 1;
+            Err("boom")
+        })
+        .unwrap_err();
+        assert_eq!(err, "boom");
+        assert_eq!(calls, 1);
     }
 }
