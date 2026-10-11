@@ -1,0 +1,14 @@
+[package]
+name = "bfi-core"
+description = "Tensor + Backend trait; CPU reference kernels for bfi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bfi-gguf = { path = "../bfi-gguf" }
+anyhow.workspace = true
+thiserror.workspace = true
+rayon.workspace = true
+parking_lot.workspace = true

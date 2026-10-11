@@ -1,0 +1,16 @@
+[package]
+name = "bfi-gguf"
+description = "GGUF v2/v3 reader and GGML type registry, including PrismML PQ2_0 / PTQ1_0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+half.workspace = true
+memmap2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,6 +1,22 @@
 [workspace]
 resolver = "2"
-members = ["crates/bf-index", "crates/bf-context", "crates/bf-memory", "crates/bf-mcp", "crates/bf-local", "crates/bf-teach", "crates/bf-vault", "crates/bf-cloud", "app/src-tauri"]
+members = [
+    "crates/bf-index",
+    "crates/bf-context",
+    "crates/bf-memory",
+    "crates/bf-mcp",
+    "crates/bf-local",
+    "crates/bf-teach",
+    "crates/bf-vault",
+    "crates/bf-cloud",
+    "crates/bfi-gguf",
+    "crates/bfi-core",
+    # "crates/bfi-models",    # landed by ticket 2922
+    # "crates/bfi-runtime",   # landed by ticket 2923
+    # "crates/bfi-server",    # landed by ticket 2924
+    # "crates/bfi",           # landed by ticket 2925
+    "app/src-tauri",
+]
 
 [workspace.package]
 version = "2026.10.4"
@@ -31,6 +47,20 @@ dirs = "5"
 rand = "0.8"
 tempfile = "3"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+memmap2 = "0.9"
+half = "2"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+axum = { version = "0.8", features = ["json"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "fs", "sync", "time", "signal", "process"] }
+tower-http = { version = "0.6", features = ["cors"] }
+minijinja = "2"
+fancy-regex = "0.14"
+rayon = "1"
+inventory = "0.3"
+hex = "0.4"
+sha2 = "0.10"
+parking_lot = "0.12"
 
 [profile.release]
 lto = "thin"

@@ -1,0 +1,23 @@
+[package]
+name = "bfi"
+description = "Builderforce native inference CLI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "bfi"
+path = "src/main.rs"
+
+[dependencies]
+bfi-server = { path = "../bfi-server" }
+bfi-runtime = { path = "../bfi-runtime" }
+bfi-gguf = { path = "../bfi-gguf" }
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+ureq.workspace = true
+sysinfo.workspace = true

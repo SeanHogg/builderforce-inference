@@ -489,6 +489,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "bfi-core"
+version = "2026.10.4"
+dependencies = [
+ "anyhow",
+ "bfi-gguf",
+ "parking_lot",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "bfi-gguf"
+version = "2026.10.4"
+dependencies = [
+ "anyhow",
+ "half",
+ "memmap2",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

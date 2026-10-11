@@ -1,0 +1,16 @@
+[package]
+name = "bfi-models"
+description = "Architecture registry: qwen3 (M1) and the Model/Architecture traits"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bfi-gguf = { path = "../bfi-gguf" }
+bfi-core = { path = "../bfi-core" }
+anyhow.workspace = true
+inventory.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
