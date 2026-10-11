@@ -1,4 +1,4 @@
-//! Update notice: the newest `desktop-v*` GitHub release versus this build. The app points
+//! Update notice: the newest `v*` release of builderforce-inference versus this build. The app points
 //! the person at the download; installing is theirs to do (a signed in-place updater
 //! needs the release signing key — see the Gap Register).
 
@@ -6,8 +6,8 @@ use serde::Serialize;
 use serde_json::Value;
 use std::time::Duration;
 
-const RELEASES_API: &str = "https://api.github.com/repos/SeanHogg/Builderforce.ai/releases?per_page=30";
-pub const TAG_PREFIX: &str = "desktop-v";
+const RELEASES_API: &str = "https://api.github.com/repos/SeanHogg/builderforce-inference/releases?per_page=30";
+pub const TAG_PREFIX: &str = "v";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,11 +65,11 @@ mod tests {
     }
 
     #[test]
-    fn picks_first_published_desktop_tag() {
+    fn picks_first_published_version_tag() {
         let v = json!([
-            { "tag_name": "v2026.9.30", "draft": false, "html_url": "a" },
-            { "tag_name": "desktop-v2026.10.2", "draft": true, "html_url": "b" },
-            { "tag_name": "desktop-v2026.10.1", "draft": false, "html_url": "c" }
+            { "tag_name": "nightly", "draft": false, "html_url": "a" },
+            { "tag_name": "v2026.10.2", "draft": true, "html_url": "b" },
+            { "tag_name": "v2026.10.1", "draft": false, "html_url": "c" }
         ]);
         assert_eq!(newest_desktop_release(&v), Some(("2026.10.1".into(), "c".into())));
     }
