@@ -855,6 +855,30 @@ mod tests {
     }
 
     #[test]
+    fn matmul_ptq1_0_finite() {
+        // Zero qs/qh + f16 d=2.0 (0x4000) dequantizes to -2.0 per elem.
+        let mut bytes = vec![0u8; 28];
+        bytes[26..28].copy_from_slice(&0x4000u16.to_le_bytes());
+        let w = cpu()
+            .upload_quant(&[1, 128], DType::PTQ1_0, &bytes)
+            .unwrap();
+        let x = Tensor::f32(vec![1, 128], vec![1.0; 128]);
+        let y = cpu().matmul_q(&w, &x).unwrap();
+        let v = y.as_f32().unwrap();
+        assert_eq!(v.len(), 1);
+        assert!(v[0].is_finite(), "{}", v[0]);
+        assert!((v[0] + 256.0).abs() < 1e-2, "{}", v[0]);
+    }
+
+    #[test]
+    fn alloc_f32_is_zeros_with_shape() {
+        let t = cpu().alloc(&[2, 4], DType::F32).unwrap();
+        assert_eq!(t.shape, vec![2, 4]);
+        assert_eq!(t.dtype, DType::F32);
+        assert_eq!(t.as_f32().unwrap(), &[0.0; 8]);
+    }
+
+    #[test]
     fn rope_preserves_l2() {
         let data = vec![3.0, 4.0, 1.0, -2.0];
         let mut x = Tensor::f32(vec![1, 1, 4], data.clone());

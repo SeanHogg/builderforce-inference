@@ -231,5 +231,82 @@ mod tests {
         assert_eq!(pq.bytes_for_elems(128), Some(34));
         assert_eq!(pq.bytes_for_elems(256), Some(68));
         assert_eq!(pq.bytes_for_elems(127), None);
+        let pt = lookup_type(TYPE_PTQ1_0).unwrap();
+        assert_eq!(pt.bytes_for_elems(128), Some(28));
+        assert_eq!(pt.bytes_for_elems(256), Some(56));
+        assert_eq!(pt.bytes_for_elems(127), None);
+        let f32t = lookup_type(TYPE_F32).unwrap();
+        assert_eq!(f32t.bytes_for_elems(3), Some(12));
+        let q8 = lookup_type(TYPE_Q8_0).unwrap();
+        assert_eq!(q8.bytes_for_elems(32), Some(34));
+        assert_eq!(q8.bytes_for_elems(31), None);
+        let q4k = lookup_type(TYPE_Q4_K).unwrap();
+        assert_eq!(q4k.bytes_for_elems(256), Some(144));
+        assert_eq!(q4k.bytes_for_elems(255), None);
+        let q6k = lookup_type(TYPE_Q6_K).unwrap();
+        assert_eq!(q6k.bytes_for_elems(256), Some(210));
+        assert_eq!(q6k.bytes_for_elems(128), None);
+    }
+
+    #[test]
+    fn legacy_types_block_layout_unchanged() {
+        let f32t = lookup_type(TYPE_F32).unwrap();
+        assert_eq!(f32t.id, 0);
+        assert_eq!((f32t.block_elems, f32t.block_bytes), (1, 4));
+        let q8 = lookup_type(TYPE_Q8_0).unwrap();
+        assert_eq!(q8.id, 8);
+        assert_eq!((q8.block_elems, q8.block_bytes), (32, 34));
+        let q4k = lookup_type(TYPE_Q4_K).unwrap();
+        assert_eq!(q4k.id, 12);
+        assert_eq!((q4k.block_elems, q4k.block_bytes), (256, 144));
+        let q6k = lookup_type(TYPE_Q6_K).unwrap();
+        assert_eq!(q6k.id, 14);
+        assert_eq!((q6k.block_elems, q6k.block_bytes), (256, 210));
+    }
+
+    #[test]
+    fn dequant_tensor_pq2_and_ptq1() {
+        let mut pq = vec![0u8; 34];
+        quantize_row_pq2_0(&[0.5f32; 128], &mut pq);
+        let mut out = vec![0.0f32; 128];
+        dequant_tensor(lookup_type(TYPE_PQ2_0).unwrap(), &pq, &mut out).unwrap();
+        assert!(out.iter().all(|v| (v - 0.5).abs() < 0.05));
+
+        let mut pt = vec![0u8; 28];
+        pt[26..28].copy_from_slice(&crate::f16::f32_to_f16(1.0).to_le_bytes());
+        out.fill(0.0);
+        dequant_tensor(lookup_type(TYPE_PTQ1_0).unwrap(), &pt, &mut out).unwrap();
+        assert!(out.iter().all(|v| (v + 1.0).abs() < 1e-3));
+    }
+
+    #[test]
+    fn dequant_tensor_legacy_f32_q8_q4k_q6k() {
+        let mut out1 = [0.0f32];
+        dequant_tensor(
+            lookup_type(TYPE_F32).unwrap(),
+            &1.5f32.to_le_bytes(),
+            &mut out1,
+        )
+        .unwrap();
+        assert!((out1[0] - 1.5).abs() < 1e-6);
+
+        let mut q8 = [0u8; 34];
+        q8[0..2].copy_from_slice(&crate::f16::f32_to_f16(1.0).to_le_bytes());
+        q8[2] = 5;
+        q8[3] = (-3i8) as u8;
+        let mut out8 = [0.0f32; 32];
+        dequant_tensor(lookup_type(TYPE_Q8_0).unwrap(), &q8, &mut out8).unwrap();
+        assert!((out8[0] - 5.0).abs() < 1e-3);
+        assert!((out8[1] + 3.0).abs() < 1e-3);
+
+        let q4k = [0u8; 144];
+        let mut out4 = [1.0f32; 256];
+        dequant_tensor(lookup_type(TYPE_Q4_K).unwrap(), &q4k, &mut out4).unwrap();
+        assert!(out4.iter().all(|&v| v == 0.0));
+
+        let q6k = [0u8; 210];
+        let mut out6 = [1.0f32; 256];
+        dequant_tensor(lookup_type(TYPE_Q6_K).unwrap(), &q6k, &mut out6).unwrap();
+        assert!(out6.iter().all(|&v| v == 0.0));
     }
 }

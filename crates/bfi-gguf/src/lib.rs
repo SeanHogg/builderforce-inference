@@ -336,6 +336,17 @@ mod tests {
             vec![("tok".into(), 34), ("attn".into(), 28)]
         );
         assert_eq!(h.weight_bytes().unwrap(), 62);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mixed.gguf");
+        std::fs::File::create(&path).unwrap().write_all(&bytes).unwrap();
+        let file = GgufFile::open(&path).unwrap();
+        let tok = file.dequant_f32("tok").unwrap();
+        assert_eq!(tok.len(), 128);
+        assert!(tok.iter().all(|v| (v - 0.25).abs() < 0.05));
+        let attn = file.dequant_f32("attn").unwrap();
+        assert_eq!(attn.len(), 128);
+        assert!(attn.iter().all(|v| (v + 1.0).abs() < 1e-3));
     }
 
     #[test]

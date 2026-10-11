@@ -302,10 +302,20 @@ mod tests {
         let arch = architecture_for("qwen3").expect("qwen3 must self-register via inventory");
         assert_eq!(arch.name(), "qwen3");
         assert_eq!(QWEN3.name(), "qwen3");
+        assert_eq!(QWEN3_ARCH, "qwen3");
+        assert_eq!(
+            architecture_for(QWEN3_ARCH).map(|a| a.name()),
+            Some("qwen3"),
+            "QWEN3_ARCH alias must resolve through architecture_for"
+        );
+        assert_eq!(architecture_for(QWEN3.name()).map(|a| a.name()), Some("qwen3"));
         let q35 = architecture_for("qwen35").expect("qwen35 must self-register via inventory");
         assert_eq!(q35.name(), "qwen35");
         assert_eq!(QWEN35.name(), "qwen35");
         assert!(architecture_for("llama").is_none());
+        assert!(architecture_for("").is_none());
+        assert!(architecture_for("qwen").is_none());
+        assert!(architecture_for("Qwen3").is_none());
         let mut known: Vec<&str> = inventory::iter::<ArchReg>
             .into_iter()
             .map(|r| r.0.name())
