@@ -40,6 +40,15 @@ BFI_GOLDEN_GGUF=/path/to/model.gguf cargo test -p bfi-gguf --test golden_dequant
 
 To compare against llama.cpp C-reference dumps (`<TYPE>-<i>.f32`, little-endian f32, one block each), set `BFI_GOLDEN_REF=/path/to/dumps`. Bit-exact by default; `BFI_GOLDEN_ULP=1` allows ≤1 ULP.
 
+Tokenizer (2,000-line mixed corpus) and greedy 20-prompt identity vs llama.cpp:
+
+```sh
+BFI_GOLDEN_GGUF=/path/to/qwen3.gguf cargo test -p bfi-runtime --test golden_tokenize -- --ignored --nocapture
+BFI_GOLDEN_GGUF=/path/to/qwen3-0.6b.gguf cargo test -p bfi-runtime --test golden_greedy -- --ignored --nocapture
+```
+
+Optional: `BFI_LLAMA_TOKENIZE` (llama-tokenize binary), `BFI_LLAMA_IDS` / `BFI_LLAMA_LOGITS` dump dirs.
+
 History was extracted from `SeanHogg/Builderforce.ai` (`desktop/`).
 
 ## License

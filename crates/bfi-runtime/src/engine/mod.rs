@@ -161,6 +161,14 @@ impl Logits {
     }
 }
 
+/// One greedy run: generated ids, decoded text, last-token logits.
+#[derive(Debug, Clone)]
+pub struct GreedyTrace {
+    pub token_ids: Vec<u32>,
+    pub text: String,
+    pub last_logits: Vec<f32>,
+}
+
 /// Loaded model with its generation loop.
 pub struct Engine {
     model: Box<dyn bfi_models::Model>,
@@ -203,6 +211,28 @@ impl Engine {
             self.take_token(&mut slot, &params)?;
         }
         self.tokenizer.decode(&slot.all_ids[slot.prompt_len..])
+    }
+
+    /// Greedy decode plus last-step logits — M2 golden corpus vs llama.cpp.
+    pub fn generate_greedy_trace(&mut self, prompt: &str, max_tokens: u32) -> Result<GreedyTrace> {
+        let params = SampleParams {
+            max_tokens,
+            temperature: 0.0,
+            top_k: 0,
+            top_p: 1.0,
+            ..SampleParams::default()
+        };
+        let mut slot = self.prefill(prompt, &params)?;
+        while !slot.done {
+            self.take_token(&mut slot, &params)?;
+        }
+        let token_ids = slot.all_ids[slot.prompt_len..].to_vec();
+        let text = self.tokenizer.decode(&token_ids)?;
+        Ok(GreedyTrace {
+            token_ids,
+            text,
+            last_logits: slot.logits.values.clone(),
+        })
     }
 
     /// Continuous batch: every live sequence takes one token per shared decode step.
