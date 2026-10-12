@@ -13,6 +13,14 @@
 ))]
 use std::sync::OnceLock;
 
+#[cfg(any(
+    feature = "cuda",
+    feature = "rocm",
+    feature = "vulkan",
+    feature = "metal"
+))]
+use cubecl::prelude::Runtime;
+
 use anyhow::Context;
 
 use crate::backend::{Backend, DeviceKind, GatedDeltaParams, RopeParams};

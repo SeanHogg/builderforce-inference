@@ -947,9 +947,21 @@ mod tests {
 
     #[test]
     fn select_backend_is_cpu() {
-        assert_eq!(select_backend().name(), "cpu");
-        assert_eq!(select_backend_from(Some("cuda")).name(), "cpu");
+        // Explicit CPU override always lands on CPU, even when a GPU feature
+        // compiled and a device is present.
         assert_eq!(select_backend_from(Some("cpu")).name(), "cpu");
+        let gpu_present = [
+            crate::backend::DeviceKind::Cuda,
+            crate::backend::DeviceKind::Rocm,
+            crate::backend::DeviceKind::Metal,
+            crate::backend::DeviceKind::Vulkan,
+        ]
+        .into_iter()
+        .any(crate::backend::device_available);
+        if !gpu_present {
+            assert_eq!(select_backend().name(), "cpu");
+            assert_eq!(select_backend_from(Some("cuda")).name(), "cpu");
+        }
     }
 
     #[test]

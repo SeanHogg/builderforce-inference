@@ -222,14 +222,22 @@ mod tests {
             if device_available(kind) {
                 assert_eq!(b.name(), kind.as_str(), "{name}");
             } else {
-                assert_eq!(b.name(), "cpu", "{name} falls through to cpu");
+                let expected = DEVICE_PROBE_ORDER
+                    .iter()
+                    .find(|k| device_available(**k))
+                    .unwrap();
+                assert_eq!(
+                    b.name(),
+                    expected.as_str(),
+                    "{name} falls through to first available"
+                );
             }
         }
-        assert_eq!(select_backend_from(Some("garbage")).name(), "cpu");
         let expected = DEVICE_PROBE_ORDER
             .iter()
             .find(|k| device_available(**k))
             .unwrap();
+        assert_eq!(select_backend_from(Some("garbage")).name(), expected.as_str());
         assert_eq!(select_backend_from(None).name(), expected.as_str());
     }
 }

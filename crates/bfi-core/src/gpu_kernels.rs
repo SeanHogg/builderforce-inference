@@ -15,19 +15,24 @@ fn gemv_pq2(
     n_out: u32,
     n_blocks: u32,
 ) {
-    if ABSOLUTE_POS < n_out {
+    // CubeCL 0.10: ABSOLUTE_POS and Array indices are usize.
+    let n_out_us = usize::cast_from(n_out);
+    let n_blocks_us = usize::cast_from(n_blocks);
+    if ABSOLUTE_POS < n_out_us {
         let row = ABSOLUTE_POS;
         let mut acc = 0.0f32;
         for b in 0..n_blocks {
-            let d = scales[row * n_blocks + b];
-            let qs_base = (row * n_blocks + b) * 8;
-            let x_base = b * 128;
+            let b_us = usize::cast_from(b);
+            let d = scales[row * n_blocks_us + b_us];
+            let qs_base = (row * n_blocks_us + b_us) * 8;
+            let x_base = b_us * 128;
             for j in 0..128u32 {
-                let word = qs[qs_base + j / 16];
+                let j_us = usize::cast_from(j);
+                let word = qs[qs_base + j_us / 16];
                 let shift = (j % 16) * 2;
                 let q = (word >> shift) & 3;
                 let w = (f32::cast_from(q) - 1.0) * d;
-                acc += w * x[x_base + j];
+                acc += w * x[x_base + j_us];
             }
         }
         out[row] = acc;
@@ -36,14 +41,11 @@ fn gemv_pq2(
 
 #[cube]
 fn pow3_of(n: u32) -> u32 {
-    match n {
-        0 => 1u32,
-        1 => 3u32,
-        2 => 9u32,
-        3 => 27u32,
-        4 => 81u32,
-        _ => 243u32,
+    let mut p = 1u32;
+    for _ in 0..n {
+        p *= 3u32;
     }
+    p
 }
 
 #[cube]
@@ -62,17 +64,21 @@ fn gemv_ptq1(
     n_out: u32,
     n_blocks: u32,
 ) {
-    if ABSOLUTE_POS < n_out {
+    let n_out_us = usize::cast_from(n_out);
+    let n_blocks_us = usize::cast_from(n_blocks);
+    if ABSOLUTE_POS < n_out_us {
         let row = ABSOLUTE_POS;
         let mut acc = 0.0f32;
         for b in 0..n_blocks {
-            let d = scales[row * n_blocks + b];
-            let qs_base = (row * n_blocks + b) * 6;
-            let x_base = b * 128;
-            let mut i = 0u32;
+            let b_us = usize::cast_from(b);
+            let d = scales[row * n_blocks_us + b_us];
+            let qs_base = (row * n_blocks_us + b_us) * 6;
+            let x_base = b_us * 128;
+            let mut i = 0;
             for n in 0..5u32 {
                 for m in 0..16u32 {
-                    let word = qs[qs_base + m / 4];
+                    let m_us = usize::cast_from(m);
+                    let word = qs[qs_base + m_us / 4];
                     let byte = (word >> ((m % 4) * 8)) & 255;
                     let w = (f32::cast_from(trit_of(byte, n)) - 1.0) * d;
                     acc += w * x[x_base + i];
@@ -81,14 +87,15 @@ fn gemv_ptq1(
             }
             for n in 0..5u32 {
                 for m in 0..8u32 {
-                    let word = qs[qs_base + 4 + m / 4];
+                    let m_us = usize::cast_from(m);
+                    let word = qs[qs_base + 4 + m_us / 4];
                     let byte = (word >> ((m % 4) * 8)) & 255;
                     let w = (f32::cast_from(trit_of(byte, n)) - 1.0) * d;
                     acc += w * x[x_base + i];
                     i += 1;
                 }
             }
-            let qh_word = qh[row * n_blocks + b];
+            let qh_word = qh[row * n_blocks_us + b_us];
             for n in 0..4u32 {
                 for h in 0..2u32 {
                     let byte = (qh_word >> (h * 8)) & 255;
