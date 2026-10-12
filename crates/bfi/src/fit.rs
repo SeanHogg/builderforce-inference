@@ -230,7 +230,8 @@ mod tests {
         let report = fit_from_header(&h, 1024, 10 * 1024 * 1024 * 1024, "cpu").unwrap();
         assert_eq!(report.breakdown.kv, 524_288);
         assert_eq!(report.breakdown.state, 0);
-        assert_eq!(report.breakdown.activations, 1_024);
+        // activations = (4 × 16 × 4) + (16 × 1024 × 4) = 256 + 65_536 = 65_792
+        assert_eq!(report.breakdown.activations, 65_792);
         assert!(report.fits);
     }
 
@@ -241,6 +242,68 @@ mod tests {
         assert_eq!(report.breakdown.kv, 256);
         assert_eq!(report.breakdown.state, 64);
         assert_eq!(report.device, "cpu");
+    }
+
+    /// Bonsai 2 27B header for `bfi fit --ctx 32768` (PRD §8 M3). Tiny dummy
+    /// tensor — does not allocate 27B. Layout matches runtime `FitShape`:
+    /// n_embd=5120, n_layer=48, GQA 40/8/128, qwen35 3+1 hybrid (no layer_types).
+    fn header_qwen35_27b() -> ModelHeader {
+        let mut meta = BTreeMap::new();
+        meta.insert(
+            "general.architecture".into(),
+            MetaValue::String("qwen35".into()),
+        );
+        meta.insert("qwen35.block_count".into(), MetaValue::U32(48));
+        meta.insert("qwen35.embedding_length".into(), MetaValue::U32(5120));
+        meta.insert("qwen35.attention.head_count".into(), MetaValue::U32(40));
+        meta.insert("qwen35.attention.head_count_kv".into(), MetaValue::U32(8));
+        meta.insert("qwen35.attention.key_length".into(), MetaValue::U32(128));
+        let bytes = write_gguf(&meta, &[f32_tensor("token_embd.weight", 8)]).unwrap();
+        ModelHeader::from_bytes(&bytes).unwrap()
+    }
+
+    #[test]
+    fn bonsai_27b_fit_json_ctx_32768_budget_36gib() {
+        const GIB: u64 = 1 << 30;
+        const BUDGET_36_GIB: u64 = 36 * GIB;
+        const PTQ1_0: u64 = 5_950_000_000;
+        const PQ2_0: u64 = 7_210_000_000;
+        const CTX: usize = 32_768;
+
+        let h = header_qwen35_27b();
+        let report = fit_from_header(&h, CTX, BUDGET_36_GIB, "cpu").unwrap();
+        // KV = 12 × 2 × 8 × 128 × 32768 × 4; state = 36 × 8 × 128 × 128 × 4
+        assert_eq!(report.breakdown.kv, 3_221_225_472);
+        assert_eq!(report.breakdown.state, 18_874_368);
+        assert_eq!(report.breakdown.activations, 671_170_560);
+        assert_eq!(report.budget_bytes, BUDGET_36_GIB);
+        assert_eq!(report.device, "cpu");
+        // Dummy weights=32; header-only still fits. Overlay HF-card sizes:
+        // PTQ1_0 needBytes 9_966_128_000 vs budgetBytes 38_654_705_664.
+        // PQ2_0  needBytes 11_226_128_000 vs budgetBytes 38_654_705_664.
+        assert!(report.fits);
+        let ptq_need = PTQ1_0
+            + report.breakdown.kv
+            + report.breakdown.state
+            + report.breakdown.activations
+            + report.breakdown.overhead;
+        let pq2_need = PQ2_0
+            + report.breakdown.kv
+            + report.breakdown.state
+            + report.breakdown.activations
+            + report.breakdown.overhead;
+        assert!(
+            ptq_need <= BUDGET_36_GIB,
+            "PTQ1_0 32K need_bytes={ptq_need} budget_bytes={BUDGET_36_GIB}"
+        );
+        assert!(
+            pq2_need <= BUDGET_36_GIB,
+            "PQ2_0 32K need_bytes={pq2_need} budget_bytes={BUDGET_36_GIB}"
+        );
+        let v = serde_json::to_value(&report).unwrap();
+        assert_eq!(v["fits"], true);
+        assert_eq!(v["budgetBytes"], BUDGET_36_GIB);
+        assert_eq!(v["maxCtxThatFits"].as_u64().unwrap() >= CTX as u64, true);
     }
 
     #[test]

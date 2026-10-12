@@ -658,6 +658,18 @@ mod layer_kind_tests {
         assert!(!default_is_recurrent(3));
     }
 
+    /// Bonsai 2 27B uses n_layer=48 (bench-kernel `SYNTH_LAYERS`). 3+1 hybrid:
+    /// full iff `(il+1)%4==0` → 12 full-attn, 36 gated-delta.
+    #[test]
+    fn bonsai_27b_48_layers_three_plus_one_is_12_full_36_delta() {
+        let rec: Vec<bool> = (0..48).map(default_is_recurrent).collect();
+        assert_eq!(rec.iter().filter(|r| **r).count(), 36);
+        assert_eq!(rec.iter().filter(|r| !**r).count(), 12);
+        assert!(default_is_recurrent(0));
+        assert!(!default_is_recurrent(3));
+        assert!(!default_is_recurrent(47));
+    }
+
     #[test]
     fn mtp_name_detection() {
         assert!(is_mtp_name("mtp.0.output_norm.weight", 4));

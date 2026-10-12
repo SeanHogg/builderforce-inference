@@ -558,6 +558,89 @@ mod tests {
         assert_eq!(report.breakdown.recurrent_state, shape.recurrent_bytes());
     }
 
+    /// Bonsai 2 27B closed form (PRD §3 / §8 M3). Never allocates 27B of RAM.
+    ///
+    /// | Field | Value | Source |
+    /// |---|---|---|
+    /// | n_embd | 5120 | PRD M1 bench-kernel default |
+    /// | n_layer | 48 | `SYNTH_LAYERS` in `crates/bfi/src/bench_kernel.rs` |
+    /// | n_head / n_kv / head_dim | 40 / 8 / 128 | Qwen GQA at width 5120 |
+    /// | layer kinds | 12 full + 36 delta | qwen35 3+1 `(il+1)%4==0` |
+    /// | PTQ1_0 / PQ2_0 weights | 5.95e9 / 7.21e9 | HF card, decimal GB (PRD §3) |
+    fn bonsai_27b_shape(weights: u64, n_ctx: usize) -> FitShape {
+        FitShape {
+            weights,
+            full_attn_layers: 12,
+            delta_net_layers: 36,
+            n_kv_heads: 8,
+            head_dim: 128,
+            n_embd: 5120,
+            n_ctx,
+        }
+    }
+
+    /// Header-only 27B layout. Tiny dummy tensor — weights are not 27B of data.
+    fn header_qwen35_27b() -> ModelHeader {
+        let mut meta = BTreeMap::new();
+        meta.insert(
+            "general.architecture".into(),
+            MetaValue::String("qwen35".into()),
+        );
+        meta.insert("qwen35.block_count".into(), MetaValue::U32(48));
+        meta.insert("qwen35.embedding_length".into(), MetaValue::U32(5120));
+        meta.insert("qwen35.attention.head_count".into(), MetaValue::U32(40));
+        meta.insert("qwen35.attention.head_count_kv".into(), MetaValue::U32(8));
+        meta.insert("qwen35.attention.key_length".into(), MetaValue::U32(128));
+        let bytes = write_gguf(&meta, &[f32_tensor("token_embd.weight", 8)]).unwrap();
+        ModelHeader::from_bytes(&bytes).unwrap()
+    }
+
+    #[test]
+    fn bonsai_27b_ctx32k_fits_36gib_or_documents_need() {
+        const GIB: u64 = 1 << 30;
+        const BUDGET_36_GIB: u64 = 36 * GIB;
+        // HF card (PRD §3). Decimal GB; this test does not map 36 GB of RAM.
+        const PTQ1_0: u64 = 5_950_000_000;
+        const PQ2_0: u64 = 7_210_000_000;
+        const CTX: usize = 32_768;
+
+        // KV = 12 × 2 × 8 × 128 × 32768 × 4 = 3_221_225_472
+        // recurrent = 36 × 8 × 128 × 128 × 4 = 18_874_368
+        // activations = (4 × 5120 × 4) + (5120 × 32768 × 4) = 671_170_560
+        let ptq = bonsai_27b_shape(PTQ1_0, CTX);
+        assert_eq!(ptq.kv_cache_bytes(), 3_221_225_472);
+        assert_eq!(ptq.recurrent_bytes(), 18_874_368);
+        assert_eq!(ptq.activations_bytes(), 671_170_560);
+        let need_ptq = ptq.rss_bytes();
+        // needBytes vs budgetBytes (PTQ1_0): 9_966_128_000 vs 36 GiB (38_654_705_664).
+        assert_eq!(
+            need_ptq,
+            PTQ1_0 + 3_221_225_472 + 18_874_368 + 671_170_560 + RUNTIME_OVERHEAD_BYTES
+        );
+        assert!(
+            need_ptq <= BUDGET_36_GIB,
+            "PTQ1_0 32K need_bytes={need_ptq} budget_bytes={BUDGET_36_GIB}"
+        );
+
+        let need_pq2 = bonsai_27b_shape(PQ2_0, CTX).rss_bytes();
+        // needBytes vs budgetBytes (PQ2_0): 11_226_128_000 vs 38_654_705_664.
+        assert!(
+            need_pq2 <= BUDGET_36_GIB,
+            "PQ2_0 32K need_bytes={need_pq2} budget_bytes={BUDGET_36_GIB}"
+        );
+
+        let h = header_qwen35_27b();
+        let report = FitReport::from_header(&h, CTX, BUDGET_36_GIB, "cpu").unwrap();
+        assert_eq!(report.breakdown.kv_cache, 3_221_225_472);
+        assert_eq!(report.breakdown.recurrent_state, 18_874_368);
+        assert_eq!(report.breakdown.activations, 671_170_560);
+        // Dummy 8-f32 tensor: weights=32. Header path still fits 36 GiB.
+        assert!(report.fits, "header-only 27B 32K need={}", report.need_bytes);
+        assert_eq!(report.device, "cpu");
+        assert_eq!(report.budget_bytes, BUDGET_36_GIB);
+        assert!(need_ptq <= report.budget_bytes);
+    }
+
     #[test]
     fn fit_path_is_header_only() {
         let h = header_qwen3();
