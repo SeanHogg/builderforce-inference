@@ -3,6 +3,8 @@
 
 use std::collections::HashSet;
 
+use crate::tools::ToolChoice;
+
 /// Sampling parameters for token generation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SampleParams {
@@ -22,6 +24,10 @@ pub struct SampleParams {
     pub grammar: Option<String>,
     /// OpenAI `response_format: json_object` — decoded text must stay a JSON-object prefix.
     pub json_object: bool,
+    /// `required` / named `tool_choice` constrain decode to a JSON tool call.
+    pub tool_choice: ToolChoice,
+    /// Allowed function names from the request `tools` array.
+    pub tool_names: Vec<String>,
 }
 
 impl Default for SampleParams {
@@ -37,6 +43,8 @@ impl Default for SampleParams {
             seed: 0,
             grammar: None,
             json_object: false,
+            tool_choice: ToolChoice::None,
+            tool_names: Vec::new(),
         }
     }
 }
@@ -58,7 +66,7 @@ pub fn apply_constraint(
     p: &SampleParams,
     decode: impl Fn(u32) -> String,
 ) {
-    if p.grammar.is_none() && !p.json_object {
+    if p.grammar.is_none() && !p.json_object && !p.tool_choice.constrains() {
         return;
     }
     if let Some(g) = p.grammar.as_deref() {
@@ -82,7 +90,10 @@ pub fn apply_constraint(
 
 fn token_allowed(so_far: &str, piece: &str, p: &SampleParams) -> bool {
     let next = format!("{so_far}{piece}");
-    if p.json_object && !json_object_prefix_ok(&next) {
+    if (p.json_object || p.tool_choice.constrains()) && !json_object_prefix_ok(&next) {
+        return false;
+    }
+    if p.tool_choice.constrains() && !tool_call_prefix_ok(&next, &p.tool_choice, &p.tool_names) {
         return false;
     }
     if let Some(g) = p.grammar.as_deref() {
@@ -94,6 +105,103 @@ fn token_allowed(so_far: &str, piece: &str, p: &SampleParams) -> bool {
         }
     }
     true
+}
+
+/// `name` field of a JSON tool-call prefix must stay on an allowed / required name.
+pub(crate) fn tool_call_prefix_ok(s: &str, choice: &ToolChoice, names: &[String]) -> bool {
+    if !json_object_prefix_ok(s) {
+        return false;
+    }
+    let required = match choice {
+        ToolChoice::Named(n) => Some(n.as_str()),
+        ToolChoice::Required => None,
+        _ => return true,
+    };
+    match json_name_so_far(s) {
+        NameSoFar::Missing => true,
+        NameSoFar::Partial(p) => {
+            if let Some(req) = required {
+                req.starts_with(&p)
+            } else {
+                names.is_empty() || names.iter().any(|n| n.starts_with(&p))
+            }
+        }
+        NameSoFar::Complete(n) => {
+            if let Some(req) = required {
+                n == req
+            } else {
+                names.is_empty() || names.iter().any(|t| t == &n)
+            }
+        }
+        NameSoFar::Invalid => false,
+    }
+}
+
+enum NameSoFar {
+    Missing,
+    Partial(String),
+    Complete(String),
+    Invalid,
+}
+
+fn json_name_so_far(s: &str) -> NameSoFar {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i + 6 <= bytes.len() {
+        if &bytes[i..i + 6] == b"\"name\"" {
+            let mut j = i + 6;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j >= bytes.len() {
+                return NameSoFar::Missing;
+            }
+            if bytes[j] != b':' {
+                i += 1;
+                continue;
+            }
+            j += 1;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j >= bytes.len() {
+                return NameSoFar::Partial(String::new());
+            }
+            if bytes[j] != b'"' {
+                return NameSoFar::Invalid;
+            }
+            j += 1;
+            let val_start = j;
+            let mut escaped = false;
+            let mut closed = false;
+            while j < bytes.len() {
+                let c = bytes[j];
+                if escaped {
+                    escaped = false;
+                    j += 1;
+                    continue;
+                }
+                if c == b'\\' {
+                    escaped = true;
+                    j += 1;
+                    continue;
+                }
+                if c == b'"' {
+                    closed = true;
+                    break;
+                }
+                j += 1;
+            }
+            let partial = String::from_utf8_lossy(&bytes[val_start..j]).into_owned();
+            return if closed {
+                NameSoFar::Complete(partial)
+            } else {
+                NameSoFar::Partial(partial)
+            };
+        }
+        i += 1;
+    }
+    NameSoFar::Missing
 }
 
 /// `root ::= id(1) | id(2)` — token-id union, no tokenizer required.
@@ -356,6 +464,8 @@ mod tests {
         assert_eq!(p.seed, 0);
         assert!(p.grammar.is_none());
         assert!(!p.json_object);
+        assert_eq!(p.tool_choice, ToolChoice::None);
+        assert!(p.tool_names.is_empty());
         assert_eq!(sample(&[1.0, 0.0, 0.5], &[], &p), 0);
     }
 
@@ -390,6 +500,38 @@ mod tests {
         };
         // token 0 = "x" (illegal first char), token 1 = "{"
         let decode = |id: u32| if id == 1 { "{".into() } else { "x".into() };
+        let mut logits = [9.0, 1.0];
+        apply_constraint(&mut logits, &[], &p, decode);
+        assert_eq!(sample(&logits, &[], &p), 1);
+    }
+
+    #[test]
+    fn required_tool_choice_forces_json_object() {
+        let p = SampleParams {
+            tool_choice: ToolChoice::Required,
+            tool_names: vec!["lookup".into()],
+            temperature: 0.0,
+            ..Default::default()
+        };
+        let decode = |id: u32| if id == 1 { "{".into() } else { "x".into() };
+        let mut logits = [9.0, 1.0];
+        apply_constraint(&mut logits, &[], &p, decode);
+        assert_eq!(sample(&logits, &[], &p), 1);
+    }
+
+    #[test]
+    fn named_tool_choice_rejects_other_name() {
+        let p = SampleParams {
+            tool_choice: ToolChoice::Named("lookup".into()),
+            tool_names: vec!["lookup".into(), "other".into()],
+            temperature: 0.0,
+            ..Default::default()
+        };
+        let decode = |id: u32| match id {
+            0 => r#"{"name":"other"}"#.into(),
+            1 => r#"{"name":"lookup"}"#.into(),
+            _ => String::new(),
+        };
         let mut logits = [9.0, 1.0];
         apply_constraint(&mut logits, &[], &p, decode);
         assert_eq!(sample(&logits, &[], &p), 1);

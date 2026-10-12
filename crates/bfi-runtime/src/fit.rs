@@ -1,15 +1,25 @@
 //! Memory estimation: how much VRAM/RAM a model needs for a given context size.
 //!
-//! PRD §5.7:
-//! `need = Σ tensor bytes (exact, from the header) + KV(ctx) + recurrent_state + activations(batch) + runtime overhead`
+//! PRD §5.7 closed form (target: within ±5% of process RSS at the same `n_ctx`):
 //!
-//! - `KV(ctx) = full_attn_layers × 2 × n_kv_heads × head_dim × ctx × kv_dtype_bytes`
-//! - `recurrent_state = delta_net_layers × n_kv_heads × head_dim × head_dim × kv_dtype_bytes`
-//!   (gated-delta per-head state `[d, d]`, matching qwen35 `StateLayout.recurrent_shape`)
+//! ```text
+//! rss ≈ Σ GGUF tensor bytes (header)
+//!     + KV(n_ctx, n_layer_full, n_kv_heads, head_dim)
+//!     + recurrent_state(n_layer_delta, n_kv_heads, head_dim)
+//!     + activations(n_embd, n_ctx)
+//!     + RUNTIME_OVERHEAD_BYTES
+//!
+//! KV          = full_attn_layers × 2 × n_kv_heads × head_dim × n_ctx × 4
+//! recurrent   = delta_net_layers × n_kv_heads × head_dim × head_dim × 4
+//! activations = (4 × n_embd × 4)           // reused decode buffers
+//!             + (n_embd × n_ctx × 4)       // prefill residual of n_ctx tokens
+//! ```
 //!
 //! Layer kinds come from `{arch}.attention.layer_types` when present. `qwen35` without
 //! that key uses the 3+1 hybrid (`(il+1)%4==0` is full attention). Other archs default
 //! to all full-attention. Header-only: no weight mapping, no network.
+//!
+//! [`FitShape`] is the same formula without a GGUF (synthetic tests).
 
 use std::path::Path;
 
@@ -49,6 +59,72 @@ impl FitBreakdown {
             .saturating_add(self.recurrent_state)
             .saturating_add(self.activations)
             .saturating_add(self.overhead)
+    }
+
+    /// Absolute error of `observed_rss` vs this estimate, as a percent of observed.
+    /// Target: `< 5.0` against process RSS at the same shape.
+    pub fn rss_error_pct(&self, observed_rss: u64) -> f64 {
+        if observed_rss == 0 {
+            return if self.total() == 0 { 0.0 } else { 100.0 };
+        }
+        let est = self.total() as f64;
+        (est - observed_rss as f64).abs() / observed_rss as f64 * 100.0
+    }
+}
+
+/// Closed-form RSS inputs (no GGUF). Public so tests and `bfi fit` share one formula.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FitShape {
+    pub weights: u64,
+    pub full_attn_layers: usize,
+    pub delta_net_layers: usize,
+    pub n_kv_heads: usize,
+    pub head_dim: usize,
+    pub n_embd: usize,
+    pub n_ctx: usize,
+}
+
+impl FitShape {
+    pub fn kv_cache_bytes(&self) -> u64 {
+        (self.full_attn_layers as u64)
+            .saturating_mul(2)
+            .saturating_mul(self.n_kv_heads as u64)
+            .saturating_mul(self.head_dim as u64)
+            .saturating_mul(self.n_ctx as u64)
+            .saturating_mul(KV_DTYPE_BYTES)
+    }
+
+    pub fn recurrent_bytes(&self) -> u64 {
+        (self.delta_net_layers as u64)
+            .saturating_mul(self.n_kv_heads as u64)
+            .saturating_mul(self.head_dim as u64)
+            .saturating_mul(self.head_dim as u64)
+            .saturating_mul(KV_DTYPE_BYTES)
+    }
+
+    pub fn activations_bytes(&self) -> u64 {
+        let decode_ws = BATCH
+            .saturating_mul(self.n_embd as u64)
+            .saturating_mul(KV_DTYPE_BYTES)
+            .saturating_mul(ACT_BUFFERS);
+        let prefill_ws = (self.n_embd as u64)
+            .saturating_mul(self.n_ctx as u64)
+            .saturating_mul(KV_DTYPE_BYTES);
+        decode_ws.saturating_add(prefill_ws)
+    }
+
+    pub fn rss_bytes(&self) -> u64 {
+        self.breakdown().total()
+    }
+
+    pub fn breakdown(&self) -> FitBreakdown {
+        FitBreakdown {
+            weights: self.weights,
+            kv_cache: self.kv_cache_bytes(),
+            recurrent_state: self.recurrent_bytes(),
+            activations: self.activations_bytes(),
+            overhead: RUNTIME_OVERHEAD_BYTES,
+        }
     }
 }
 
@@ -110,6 +186,7 @@ struct ModelLayout {
     n_kv_heads: usize,
     head_dim: usize,
     n_embd: usize,
+    #[allow(dead_code)]
     n_layer: usize,
 }
 
@@ -229,39 +306,20 @@ fn default_is_recurrent(arch: &str, il: usize) -> bool {
     }
 }
 
-fn kv_bytes(layout: &ModelLayout, ctx: usize) -> u64 {
-    (layout.full_attn_layers as u64)
-        .saturating_mul(2)
-        .saturating_mul(layout.n_kv_heads as u64)
-        .saturating_mul(layout.head_dim as u64)
-        .saturating_mul(ctx as u64)
-        .saturating_mul(KV_DTYPE_BYTES)
-}
-
-fn state_bytes(layout: &ModelLayout) -> u64 {
-    (layout.delta_net_layers as u64)
-        .saturating_mul(layout.n_kv_heads as u64)
-        .saturating_mul(layout.head_dim as u64)
-        .saturating_mul(layout.head_dim as u64)
-        .saturating_mul(KV_DTYPE_BYTES)
-}
-
-fn activations_bytes(layout: &ModelLayout) -> u64 {
-    BATCH
-        .saturating_mul(layout.n_layer as u64)
-        .saturating_mul(layout.n_embd as u64)
-        .saturating_mul(KV_DTYPE_BYTES)
-        .saturating_mul(ACT_BUFFERS)
+fn as_shape(layout: &ModelLayout, weights: u64, ctx: usize) -> FitShape {
+    FitShape {
+        weights,
+        full_attn_layers: layout.full_attn_layers,
+        delta_net_layers: layout.delta_net_layers,
+        n_kv_heads: layout.n_kv_heads,
+        head_dim: layout.head_dim,
+        n_embd: layout.n_embd,
+        n_ctx: ctx,
+    }
 }
 
 fn breakdown_at(layout: &ModelLayout, weights: u64, ctx: usize) -> FitBreakdown {
-    FitBreakdown {
-        weights,
-        kv_cache: kv_bytes(layout, ctx),
-        recurrent_state: state_bytes(layout),
-        activations: activations_bytes(layout),
-        overhead: RUNTIME_OVERHEAD_BYTES,
-    }
+    as_shape(layout, weights, ctx).breakdown()
 }
 
 fn need_at(layout: &ModelLayout, weights: u64, ctx: usize) -> u64 {
@@ -396,13 +454,13 @@ mod tests {
         // KV = 4 × 2 × 2 × 8 × 1024 × 4 = 524_288
         assert_eq!(report.breakdown.kv_cache, 524_288);
         assert_eq!(report.breakdown.recurrent_state, 0);
-        // activations = 1 × 4 × 16 × 4 × 4 = 1_024
-        assert_eq!(report.breakdown.activations, 1_024);
+        // activations = (4 × 16 × 4) + (16 × 1024 × 4) = 256 + 65_536 = 65_792
+        assert_eq!(report.breakdown.activations, 65_792);
         assert_eq!(report.breakdown.overhead, RUNTIME_OVERHEAD_BYTES);
         assert_eq!(report.breakdown.weights, 32);
         assert_eq!(
             report.need_bytes,
-            32 + 524_288 + 0 + 1_024 + RUNTIME_OVERHEAD_BYTES
+            32 + 524_288 + 0 + 65_792 + RUNTIME_OVERHEAD_BYTES
         );
         assert!(report.fits);
         assert_eq!(report.device, "cpu");
@@ -444,17 +502,60 @@ mod tests {
     #[test]
     fn max_ctx_binary_search_and_zero_when_fixed_exceeds_budget() {
         let h = header_qwen3();
-        let weights = 32u64;
-        let layout = model_layout(&h).unwrap();
-        let fixed = weights + state_bytes(&layout) + activations_bytes(&layout) + RUNTIME_OVERHEAD_BYTES;
-        let kv_at_1000 = kv_bytes(&layout, 1000);
-        let report = FitReport::from_header(&h, 10_000, fixed + kv_at_1000, "cpu").unwrap();
+        let at_1000 = FitReport::from_header(&h, 1000, u64::MAX, "cpu").unwrap();
+        let report = FitReport::from_header(&h, 10_000, at_1000.need_bytes, "cpu").unwrap();
         assert!(!report.fits);
         assert_eq!(report.max_ctx_that_fits, 1000);
 
         let too_small = FitReport::from_header(&h, 1024, 1, "cpu").unwrap();
         assert!(!too_small.fits);
         assert_eq!(too_small.max_ctx_that_fits, 0);
+    }
+
+    #[test]
+    fn synthetic_shape_1gib_kv_matches_closed_form() {
+        // n_layer=32 full attn, n_kv_heads=8, head_dim=128, n_ctx=4096
+        // KV = 32 × 2 × 8 × 128 × 4096 × 4 = 1_073_741_824
+        let shape = FitShape {
+            weights: 2_000_000_000,
+            full_attn_layers: 32,
+            delta_net_layers: 0,
+            n_kv_heads: 8,
+            head_dim: 128,
+            n_embd: 1024,
+            n_ctx: 4096,
+        };
+        assert_eq!(shape.kv_cache_bytes(), 1_073_741_824);
+        let b = shape.breakdown();
+        assert_eq!(b.kv_cache, 1_073_741_824);
+        assert_eq!(b.recurrent_state, 0);
+        // decode 4*1024*4 = 16_384; prefill 1024*4096*4 = 16_777_216
+        assert_eq!(b.activations, 16_384 + 16_777_216);
+        assert_eq!(b.total(), shape.rss_bytes());
+        // 4 KiB allocator rounding is << 5% of ~3 GiB
+        let observed = b.total().saturating_add(4096);
+        assert!(b.rss_error_pct(observed) < 5.0);
+    }
+
+    #[test]
+    fn synthetic_hybrid_shape_splits_kv_and_state() {
+        let shape = FitShape {
+            weights: 64,
+            full_attn_layers: 1,
+            delta_net_layers: 3,
+            n_kv_heads: 2,
+            head_dim: 8,
+            n_embd: 16,
+            n_ctx: 1024,
+        };
+        // KV = 1 × 2 × 2 × 8 × 1024 × 4 = 131_072
+        assert_eq!(shape.kv_cache_bytes(), 131_072);
+        // state = 3 × 2 × 8 × 8 × 4 = 1_536
+        assert_eq!(shape.recurrent_bytes(), 1_536);
+        let h = header_qwen35_hybrid_default();
+        let report = FitReport::from_header(&h, 1024, u64::MAX, "cpu").unwrap();
+        assert_eq!(report.breakdown.kv_cache, shape.kv_cache_bytes());
+        assert_eq!(report.breakdown.recurrent_state, shape.recurrent_bytes());
     }
 
     #[test]

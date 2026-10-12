@@ -488,6 +488,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chat_required_tool_choice_without_tools_is_400() {
+        let app = router(AppState::new(ServerConfig::default()));
+        let body = r#"{
+            "model":"x",
+            "messages":[{"role":"user","content":"hi"}],
+            "tool_choice":"required"
+        }"#;
+        let res = send(app, "POST", "/v1/chat/completions", body, None).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn chat_unknown_tool_choice_is_400() {
+        let app = router(AppState::new(ServerConfig::default()));
+        let body = r#"{
+            "model":"x",
+            "messages":[{"role":"user","content":"hi"}],
+            "tools":[{"type":"function","function":{"name":"f","parameters":{}}}],
+            "tool_choice":"banana"
+        }"#;
+        let res = send(app, "POST", "/v1/chat/completions", body, None).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn chat_tool_choice_object_accepted_without_model() {
         let app = router(AppState::new(ServerConfig::default()));
         let body = r#"{
