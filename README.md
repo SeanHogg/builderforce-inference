@@ -30,6 +30,16 @@
 cargo build --workspace
 ```
 
+### Golden dequant (PRD §8 M2)
+
+CI `cargo test -p bfi-gguf` does **not** need weights. To sample 8 real blocks of each M2 type (`Q4_K`, `Q5_K`, `Q6_K`, `Q8_0`, `F16`, `PQ2_0`, `PTQ1_0`) from a Bonsai / qwen3 GGUF:
+
+```sh
+BFI_GOLDEN_GGUF=/path/to/model.gguf cargo test -p bfi-gguf --test golden_dequant -- --ignored --nocapture
+```
+
+To compare against llama.cpp C-reference dumps (`<TYPE>-<i>.f32`, little-endian f32, one block each), set `BFI_GOLDEN_REF=/path/to/dumps`. Bit-exact by default; `BFI_GOLDEN_ULP=1` allows ≤1 ULP.
+
 History was extracted from `SeanHogg/Builderforce.ai` (`desktop/`).
 
 ## License
