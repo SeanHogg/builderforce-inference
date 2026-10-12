@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Approved scope, not started |
+| Status | In progress — crate scaffolding exists (tokenizer, sampler, prefix cache, grammar, embeddings, sequential `generate_batch`); Synapse still drives Ollama |
 | Owner | Synapse / builderforce-inference |
 | Written | 2026-10-11 |
 | Tracks | Builderforce.ai `ROADMAP.md` → "Local LLM execution" row |
@@ -132,7 +132,7 @@ Each crate depends only on the crates below it in the diagram. **No crate may gr
   - A fixed-size recurrent state per sequence for delta-net layers. This is why 262K context is affordable on `qwen35`: only 25% of layers grow with the context.
   - `StateLayout` (from the model) tells the runtime what to allocate.
 - **Sampler:** greedy, temperature, top-k, top-p, min-p, repetition/presence penalty and seed. JSON-schema/grammar-constrained decoding is M4 (needed for reliable tool calls).
-- **Scheduler:** M3 is a single sequence. M4 adds continuous batching (several requests share decode steps) and prompt-prefix caching.
+- **Scheduler:** M3 is a single sequence. Sequential `generate_batch` (reuse one loaded Engine; no concurrent token mixing) and prompt-prefix caching landed 2026-10-12 (`e4c07ee`). Concurrent decode mixing / paged attention remains.
 - **Model store:** `~/.builderforce/models/` (shared with Synapse). The layout follows the HF cache (`<repo>/<revision>/<file>`), plus `aliases.toml`, which ships in the repo and can be overridden by the user. Example: `bonsai2:27b = "prism-ml/Ternary-Bonsai-2-27B-gguf:PTQ1_0"`.
 
 ### 5.5 `bfi-server`
