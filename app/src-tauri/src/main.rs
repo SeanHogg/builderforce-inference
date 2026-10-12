@@ -149,6 +149,7 @@ fn main() {
             local::local_set_api,
             local::local_api_connect,
             local::local_api_rotate_key,
+            local::local_ensure_runtime,
         ])
         .setup(|app| {
             tray::install(app.handle())?;

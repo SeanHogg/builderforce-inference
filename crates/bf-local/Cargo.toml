@@ -17,6 +17,7 @@ sysinfo.workspace = true
 dirs.workspace = true
 bf-vault = { path = "../bf-vault" }
 bf-cloud = { path = "../bf-cloud" }
+bfi-runtime = { path = "../bfi-runtime" }
 
 [dev-dependencies]
 tempfile.workspace = true

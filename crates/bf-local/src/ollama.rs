@@ -1,7 +1,6 @@
 //! Deprecated fallback: the Ollama runtime Synapse used before [`crate::runtime`].
-//! Kept until the bfi supervisor is the default everywhere. Select with
-//! `SYNAPSE_USE_OLLAMA=1`. Do not delete this module until `runtime` compiles and
-//! is wired through.
+//! Not the required install path — Synapse ships and supervises `bfi`. Select with
+//! `SYNAPSE_USE_OLLAMA=1`. Do not delete this module until M5 full cut-over.
 //!
 //! Address: `OLLAMA_HOST` when set (as Ollama itself reads it), else `127.0.0.1:11434`.
 
@@ -16,6 +15,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(1200);
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// A pull streams for as long as the download takes; this bounds one silent gap.
 const PULL_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
+/// Deprecated: Ollama's download page. Not the required install path — Synapse ships `bfi`.
+#[allow(dead_code)]
 pub const DOWNLOAD_URL: &str = "https://ollama.com/download";
 
 /// The runtime's base URL, from an `OLLAMA_HOST`-style value.

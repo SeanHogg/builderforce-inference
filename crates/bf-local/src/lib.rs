@@ -8,6 +8,8 @@
 
 pub mod api;
 pub mod chat;
+pub mod desktop;
+pub mod fit;
 pub mod hub;
 pub mod ollama;
 pub mod runtime;

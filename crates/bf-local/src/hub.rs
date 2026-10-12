@@ -5,6 +5,7 @@
 //! model it recommends for this machine.
 
 use serde::Serialize;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum Quant {
@@ -17,8 +18,9 @@ pub enum Quant {
 }
 
 impl Quant {
-    /// Effective bits per weight, scales included.
-    fn bits(self) -> f64 {
+    /// Effective bits per weight, scales included. Catalog-only; GGUF-on-disk
+    /// uses [`bfi_runtime::fit`] via [`crate::fit::catalog_fit`].
+    pub(crate) fn bits(self) -> f64 {
         match self {
             Quant::Q4 => 4.85,
             Quant::Q8 => 8.5,
@@ -98,14 +100,13 @@ pub const HUB: &[HubModel] = &[
     },
 ];
 
-/// The context's working memory and the runtime itself, on top of the weights.
-const OVERHEAD_BYTES: f64 = 1.2e9;
 /// The share of the machine's memory a model may take; the rest is for everything else.
 const BUDGET_SHARE: f64 = 0.6;
 
 /// Bytes a model of `params_b` billion parameters needs at `quant`.
+/// Catalog path of [`crate::fit::catalog_fit`] (bits-per-weight + overhead).
 pub fn estimate_bytes(params_b: f64, quant: Quant) -> u64 {
-    (params_b * 1e9 * quant.bits() / 8.0 + OVERHEAD_BYTES) as u64
+    crate::fit::estimate_from_bits(params_b, quant, u64::MAX).need_bytes
 }
 
 pub fn budget_bytes(total_memory: u64) -> u64 {
@@ -151,6 +152,18 @@ pub struct HubView {
 }
 
 pub fn view(total_memory: u64) -> HubView {
+    view_with_gguf(total_memory, |_| None)
+}
+
+/// Same as [`view`], but a tag that is already on disk is sized with [`bfi_runtime::fit`].
+pub fn view_with_store(total_memory: u64) -> HubView {
+    view_with_gguf(total_memory, |tag| {
+        let p = bfi_runtime::model_path(tag);
+        p.is_file().then_some(p)
+    })
+}
+
+fn view_with_gguf(total_memory: u64, gguf_for: impl Fn(&str) -> Option<PathBuf>) -> HubView {
     let budget = budget_bytes(total_memory);
     let mut best: Option<(f64, Quant, String)> = None;
     let models = HUB
@@ -167,13 +180,13 @@ pub fn view(total_memory: u64) -> HubView {
                         .tags
                         .iter()
                         .map(|(q, tag)| {
-                            let bytes = estimate_bytes(v.params_b, *q);
-                            PickView { quant: *q, tag: tag.to_string(), bytes, fits: bytes <= budget }
+                            let report = crate::fit::catalog_fit(v.params_b, *q, budget, gguf_for(tag).as_deref());
+                            PickView { quant: *q, tag: (*tag).to_string(), bytes: report.need_bytes, fits: report.fits }
                         })
                         .collect();
                     let pick = options.iter().filter(|o| o.fits).max_by_key(|o| o.quant).cloned();
-                    // The recommendation is a general-purpose model: most parameters first,
-                    // then the better quantization.
+                    // Highest-quality Chat variant whose fit.fits is true: most parameters
+                    // first, then the better quantization.
                     if let (Some(p), Purpose::Chat) = (&pick, m.purpose) {
                         let better = best.as_ref().is_none_or(|(b, bq, _)| v.params_b > *b || (v.params_b == *b && p.quant > *bq));
                         if better {

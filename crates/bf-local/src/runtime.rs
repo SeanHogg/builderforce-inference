@@ -129,6 +129,8 @@ struct Inner {
     base: Mutex<String>,
     error: Mutex<Option<String>>,
     child: Mutex<Option<Child>>,
+    /// True after this process merged `models` into desktop.json; stop withdraws only then.
+    published: AtomicBool,
 }
 
 /// Live supervisor. Dropping it stops the child.
@@ -141,7 +143,13 @@ impl Handle {
     /// Start `bfi serve`, unless [`use_ollama_fallback`] is set.
     pub fn start() -> Self {
         if use_ollama_fallback() {
-            return Self::idle(crate::ollama::base());
+            let h = Self::idle(crate::ollama::base());
+            if let Some(m) = crate::desktop::from_base(&h.base(), "", "") {
+                if crate::desktop::publish_default(&m).is_ok() {
+                    h.inner.published.store(true, Ordering::SeqCst);
+                }
+            }
+            return h;
         }
         Self::start_with(Config::default())
     }
@@ -152,6 +160,7 @@ impl Handle {
             base: Mutex::new(String::new()),
             error: Mutex::new(None),
             child: Mutex::new(None),
+            published: AtomicBool::new(false),
         });
         let run_inner = inner.clone();
         let thread = thread::Builder::new().name("synapse-bfi".into()).spawn(move || supervise(run_inner, cfg)).ok();
@@ -165,6 +174,7 @@ impl Handle {
                 base: Mutex::new(base),
                 error: Mutex::new(None),
                 child: Mutex::new(None),
+                published: AtomicBool::new(false),
             }),
             thread: Mutex::new(None),
         }
@@ -187,6 +197,9 @@ impl Handle {
         }
         *AUTH_TOKEN.lock().unwrap() = None;
         *LAST_VERSION.lock().unwrap() = None;
+        if self.inner.published.swap(false, Ordering::SeqCst) {
+            let _ = crate::desktop::withdraw_default();
+        }
     }
 }
 
@@ -197,7 +210,12 @@ impl Drop for Handle {
 }
 
 pub fn use_ollama_fallback() -> bool {
-    matches!(std::env::var("SYNAPSE_USE_OLLAMA").unwrap_or_default().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    ollama_fallback_from_env(std::env::var("SYNAPSE_USE_OLLAMA").ok().as_deref())
+}
+
+/// `SYNAPSE_USE_OLLAMA` is 1/true/yes/on. Empty or unset prefers bfi.
+pub fn ollama_fallback_from_env(val: Option<&str>) -> bool {
+    matches!(val.unwrap_or("").to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
 }
 
 /// `Authorization: Bearer …` value for the live child, if `--auth` issued a token.
@@ -227,22 +245,40 @@ fn builderforce_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".builderforce")
 }
 
+/// Tauri sidecar on-disk name: `bfi-<target-triple>[.exe]`.
+pub fn sidecar_file_name() -> String {
+    let triple = env!("BFI_TARGET_TRIPLE");
+    if cfg!(windows) {
+        format!("bfi-{triple}.exe")
+    } else {
+        format!("bfi-{triple}")
+    }
+}
+
+/// A `bfi` binary shipped next to this executable (Tauri sidecar or sibling).
+pub fn sidecar_bfi() -> Option<PathBuf> {
+    let name = if cfg!(windows) { "bfi.exe" } else { "bfi" };
+    let sidecar = sidecar_file_name();
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    for n in [name, sidecar.as_str()] {
+        let p = dir.join(n);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
 pub fn bfi_bin() -> PathBuf {
     if let Ok(p) = std::env::var("BFI_BIN") {
         if !p.is_empty() {
             return PathBuf::from(p);
         }
     }
-    let name = if cfg!(windows) { "bfi.exe" } else { "bfi" };
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return candidate;
-            }
-        }
+    if let Some(p) = sidecar_bfi() {
+        return p;
     }
-    PathBuf::from(name)
+    PathBuf::from(if cfg!(windows) { "bfi.exe" } else { "bfi" })
 }
 
 pub fn serve_args(models_dir: &Path) -> Vec<String> {
@@ -356,6 +392,9 @@ fn apply_discovery(inner: &Inner, d: &BfiJson) {
     *inner.base.lock().unwrap() = format!("http://127.0.0.1:{}", d.port);
     *AUTH_TOKEN.lock().unwrap() = if d.token.is_empty() { None } else { Some(d.token.clone()) };
     *LAST_VERSION.lock().unwrap() = if d.version.is_empty() { None } else { Some(d.version.clone()) };
+    if crate::desktop::publish_default(&crate::desktop::from_bfi(d)).is_ok() {
+        inner.published.store(true, Ordering::SeqCst);
+    }
 }
 
 fn wait_ready(child: &mut Child, cfg: &Config, stop: &AtomicBool) -> Result<BfiJson> {
@@ -658,5 +697,40 @@ mod tests {
         let t0 = Instant::now();
         h.stop();
         assert!(t0.elapsed() < Duration::from_secs(3), "stop should reap the mock child promptly");
+    }
+
+    #[test]
+    fn runtime_prefers_bfi_unless_synapse_use_ollama() {
+        assert!(!ollama_fallback_from_env(None));
+        assert!(!ollama_fallback_from_env(Some("")));
+        assert!(!ollama_fallback_from_env(Some("0")));
+        assert!(!ollama_fallback_from_env(Some("off")));
+        assert!(ollama_fallback_from_env(Some("1")));
+        assert!(ollama_fallback_from_env(Some("true")));
+        assert!(ollama_fallback_from_env(Some("YES")));
+        assert!(ollama_fallback_from_env(Some("on")));
+    }
+
+    #[test]
+    fn sidecar_file_name_is_bfi_plus_target_triple() {
+        let n = sidecar_file_name();
+        assert!(n.starts_with("bfi-"), "{n}");
+        if cfg!(windows) {
+            assert!(n.ends_with(".exe"), "{n}");
+        } else {
+            assert!(!n.ends_with(".exe"), "{n}");
+        }
+        assert!(!n.contains("unknown") || env!("BFI_TARGET_TRIPLE") == "unknown");
+    }
+
+    #[test]
+    fn bfi_bin_honours_bfi_bin_env() {
+        let prev = std::env::var_os("BFI_BIN");
+        std::env::set_var("BFI_BIN", "/tmp/custom-bfi");
+        assert_eq!(bfi_bin(), PathBuf::from("/tmp/custom-bfi"));
+        match prev {
+            Some(v) => std::env::set_var("BFI_BIN", v),
+            None => std::env::remove_var("BFI_BIN"),
+        }
     }
 }

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// Beside Ollama's 11434, so it is easy to remember and unlikely to be taken.
+/// Beside the engine's 11434, so it is easy to remember and unlikely to be taken.
 pub const DEFAULT_API_PORT: u16 = 11435;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
