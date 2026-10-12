@@ -28,6 +28,13 @@ pub fn dispatch(cmd: Commands) -> Result<()> {
         Commands::Rm { model } => cmd_rm(&model),
         Commands::Ls => cmd_ls(),
         Commands::Bench { model, pp, tg } => cmd_bench(&model, pp, tg),
+        Commands::BenchKernel {
+            gguf,
+            n_out,
+            n_in,
+            iters,
+            dtype,
+        } => crate::bench_kernel::run(gguf, n_out, n_in, iters, &dtype),
         Commands::ImportOllama { ollama_dir } => cmd_import_ollama(ollama_dir),
     }
 }

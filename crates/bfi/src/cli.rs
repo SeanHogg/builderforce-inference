@@ -75,6 +75,24 @@ pub enum Commands {
         #[arg(long, default_value_t = 128)]
         tg: usize,
     },
+    /// Time fused PQ2_0 / PTQ1_0 GEMV and project decode tok/s (PRD M1).
+    BenchKernel {
+        /// Optional GGUF. When omitted, synthetic Bonsai-27B hidden=5120 weights.
+        #[arg(long)]
+        gguf: Option<PathBuf>,
+        /// Rows of the synthetic matrix (ignored when `--gguf` is set).
+        #[arg(long, default_value_t = 5120)]
+        n_out: usize,
+        /// Columns / hidden size of the synthetic matrix.
+        #[arg(long, default_value_t = 5120)]
+        n_in: usize,
+        /// Timed iterations after one warmup.
+        #[arg(long, default_value_t = 10)]
+        iters: usize,
+        /// Synthetic dtype: `pq2` or `ptq1`.
+        #[arg(long, default_value = "pq2")]
+        dtype: String,
+    },
     /// Link Ollama blob-store GGUFs into our store (no re-download).
     ImportOllama {
         /// Ollama models dir. Default `$OLLAMA_MODELS` or `~/.ollama/models`.
@@ -118,6 +136,35 @@ mod tests {
             parse(&["bfi", "bench", "m", "--pp", "256", "--tg", "64"]).cmd,
             Commands::Bench { pp: 256, tg: 64, .. }
         ));
+        match parse(&[
+            "bfi",
+            "bench-kernel",
+            "--n-out",
+            "4",
+            "--n-in",
+            "128",
+            "--iters",
+            "2",
+            "--dtype",
+            "ptq1",
+        ])
+        .cmd
+        {
+            Commands::BenchKernel {
+                n_out,
+                n_in,
+                iters,
+                dtype,
+                gguf,
+            } => {
+                assert_eq!(n_out, 4);
+                assert_eq!(n_in, 128);
+                assert_eq!(iters, 2);
+                assert_eq!(dtype, "ptq1");
+                assert!(gguf.is_none());
+            }
+            other => panic!("{other:?}"),
+        }
         assert!(matches!(
             parse(&["bfi", "import-ollama"]).cmd,
             Commands::ImportOllama { .. }
@@ -147,6 +194,7 @@ mod tests {
             "rm",
             "ls",
             "bench",
+            "bench-kernel",
             "import-ollama",
         ] {
             let text = help_text(&["bfi", cmd, "--help"]);

@@ -1,8 +1,9 @@
 //! Builderforce native inference CLI (`bfi`).
 //!
 //! Subcommands: `pull`, `run`, `serve`, `ps`, `fit`, `rm`, `ls`, `bench`,
-//! `import-ollama`. See PRD §5.6–5.7.
+//! `bench-kernel`, `import-ollama`. See PRD §5.6–5.7.
 
+pub mod bench_kernel;
 pub mod cli;
 pub mod commands;
 pub mod fit;

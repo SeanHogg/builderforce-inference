@@ -6,9 +6,18 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+# CubeCL 0.10 feature names: cuda, rocm→hip, metal→wgpu-msl, vulkan→wgpu-spirv.
+cuda = ["dep:cubecl", "cubecl/std", "cubecl/cuda"]
+rocm = ["dep:cubecl", "cubecl/std", "cubecl/rocm"]
+metal = ["dep:cubecl", "cubecl/std", "cubecl/metal"]
+vulkan = ["dep:cubecl", "cubecl/std", "cubecl/vulkan"]
+
 [dependencies]
 bfi-gguf = { path = "../bfi-gguf" }
 anyhow.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
 parking_lot.workspace = true
+cubecl = { workspace = true, optional = true }

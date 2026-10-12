@@ -1,4 +1,5 @@
 use crate::cpu::CpuBackend;
+use crate::gpu::GpuBackend;
 use crate::{DType, Tensor};
 
 #[derive(Clone, Debug)]
@@ -115,16 +116,21 @@ pub const DEVICE_PROBE_ORDER: [DeviceKind; 5] = [
     DeviceKind::Cpu,
 ];
 
-/// Whether this build can open `kind`. GPU backends are later tickets;
-/// this crate ships the CPU reference only.
+/// Whether this build can open `kind`. GPU kinds are true only when the
+/// matching CubeCL feature is compiled *and* the device enumerates.
 pub fn device_available(kind: DeviceKind) -> bool {
-    matches!(kind, DeviceKind::Cpu)
+    match kind {
+        DeviceKind::Cpu => true,
+        other => crate::gpu::probe(other),
+    }
 }
 
 pub fn open_backend(kind: DeviceKind) -> Option<Box<dyn Backend>> {
     match kind {
         DeviceKind::Cpu => Some(Box::new(CpuBackend)),
-        DeviceKind::Cuda | DeviceKind::Rocm | DeviceKind::Metal | DeviceKind::Vulkan => None,
+        DeviceKind::Cuda | DeviceKind::Rocm | DeviceKind::Metal | DeviceKind::Vulkan => {
+            GpuBackend::try_open(kind).map(|b| Box::new(b) as Box<dyn Backend>)
+        }
     }
 }
 
@@ -149,8 +155,8 @@ pub fn select_backend_from(override_name: Option<&str>) -> Box<dyn Backend> {
     Box::new(CpuBackend)
 }
 
-/// Automatic device selection. Honors `BFI_BACKEND`; GPU kinds fall through
-/// to CPU until those backends land.
+/// Automatic device selection. Honors `BFI_BACKEND`; missing GPU features or
+/// devices fall through to CPU.
 pub fn select_backend() -> Box<dyn Backend> {
     select_backend_from(std::env::var("BFI_BACKEND").ok().as_deref())
 }
@@ -183,19 +189,47 @@ mod tests {
             ]
         );
         assert!(device_available(DeviceKind::Cpu));
-        assert!(!device_available(DeviceKind::Cuda));
-        assert!(open_backend(DeviceKind::Cuda).is_none());
+        for kind in [
+            DeviceKind::Cuda,
+            DeviceKind::Rocm,
+            DeviceKind::Metal,
+            DeviceKind::Vulkan,
+        ] {
+            assert_eq!(
+                open_backend(kind).is_some(),
+                device_available(kind),
+                "{kind:?}"
+            );
+        }
         assert_eq!(open_backend(DeviceKind::Cpu).unwrap().name(), "cpu");
+        // Default cargo test compiles no GPU feature, so CUDA cannot open.
+        if !cfg!(feature = "cuda") {
+            assert!(!device_available(DeviceKind::Cuda));
+            assert!(open_backend(DeviceKind::Cuda).is_none());
+        }
     }
 
     #[test]
     fn select_backend_from_honors_override_and_falls_back() {
         assert_eq!(select_backend_from(Some("cpu")).name(), "cpu");
-        assert_eq!(select_backend_from(Some("cuda")).name(), "cpu");
-        assert_eq!(select_backend_from(Some("ROCm")).name(), "cpu");
-        assert_eq!(select_backend_from(Some("metal")).name(), "cpu");
-        assert_eq!(select_backend_from(Some("vulkan")).name(), "cpu");
+        for (name, kind) in [
+            ("cuda", DeviceKind::Cuda),
+            ("ROCm", DeviceKind::Rocm),
+            ("metal", DeviceKind::Metal),
+            ("vulkan", DeviceKind::Vulkan),
+        ] {
+            let b = select_backend_from(Some(name));
+            if device_available(kind) {
+                assert_eq!(b.name(), kind.as_str(), "{name}");
+            } else {
+                assert_eq!(b.name(), "cpu", "{name} falls through to cpu");
+            }
+        }
         assert_eq!(select_backend_from(Some("garbage")).name(), "cpu");
-        assert_eq!(select_backend_from(None).name(), "cpu");
+        let expected = DEVICE_PROBE_ORDER
+            .iter()
+            .find(|k| device_available(**k))
+            .unwrap();
+        assert_eq!(select_backend_from(None).name(), expected.as_str());
     }
 }

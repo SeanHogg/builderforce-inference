@@ -13,10 +13,18 @@ path = "src/lib.rs"
 name = "bfi"
 path = "src/main.rs"
 
+[features]
+default = []
+cuda = ["bfi-core/cuda"]
+rocm = ["bfi-core/rocm"]
+metal = ["bfi-core/metal"]
+vulkan = ["bfi-core/vulkan"]
+
 [dependencies]
 bfi-server = { path = "../bfi-server" }
 bfi-runtime = { path = "../bfi-runtime" }
 bfi-gguf = { path = "../bfi-gguf" }
+bfi-core = { path = "../bfi-core" }
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true

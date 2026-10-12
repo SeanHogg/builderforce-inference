@@ -4,6 +4,8 @@ mod backend;
 mod cpu;
 mod dtype;
 mod error;
+mod fused_gemv;
+mod gpu;
 mod tensor;
 
 pub use backend::{
@@ -13,4 +15,6 @@ pub use backend::{
 pub use cpu::CpuBackend;
 pub use dtype::DType;
 pub use error::CoreError;
+pub use fused_gemv::{fused_gemv_pq2_0, fused_gemv_ptq1_0, max_rel_err};
+pub use gpu::GpuBackend;
 pub use tensor::{Storage, Tensor};
