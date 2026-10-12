@@ -34,7 +34,6 @@ pub async fn local_state(local: State<'_, Arc<Local>>) -> Res<Value> {
                 "endpoint": desktop::endpoint_from_base(&base),
                 "version": version,
                 "error": l.runtime_error(),
-                "ollamaFallback": runtime::use_ollama_fallback(),
             },
             "installed": installed,
             "hub": hub::view_with_store(hub::total_memory()),
@@ -115,7 +114,7 @@ pub async fn local_api_rotate_key(local: State<'_, Arc<Local>>) -> Res<()> {
     blocking(local, |l| l.rotate_key().map(|_| ()).map_err(e)).await
 }
 
-/// Confirm the supervised engine is bfi (Synapse) unless `SYNAPSE_USE_OLLAMA=1`.
+/// Confirm the supervised engine is bfi (Synapse).
 #[tauri::command]
 pub async fn local_ensure_runtime(local: State<'_, Arc<Local>>) -> Res<Value> {
     blocking(local, |l| {
@@ -126,7 +125,6 @@ pub async fn local_ensure_runtime(local: State<'_, Arc<Local>>) -> Res<Value> {
             "base": base,
             "endpoint": desktop::endpoint_from_base(&base),
             "sidecar": runtime::sidecar_file_name(),
-            "ollamaFallback": runtime::use_ollama_fallback(),
             "error": l.runtime_error(),
         }))
     })

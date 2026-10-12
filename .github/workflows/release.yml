@@ -42,6 +42,7 @@ jobs:
       # bf-cloud is also Spawn's account crate (a git dependency there), so it is tested here.
       - run: cargo test -p bf-index -p bf-context -p bf-memory -p bf-teach --no-default-features
       - run: cargo test -p bf-cloud
+      - run: cargo test -p bf-local
 
   tag:
     runs-on: ubuntu-22.04
@@ -141,6 +142,29 @@ jobs:
           apple-id: ${{ secrets.APPLE_ID }}
           apple-password: ${{ secrets.APPLE_PASSWORD }}
           team-id: ${{ secrets.APPLE_TEAM_ID }}
+      # CPU sidecar: this workflow has no CUDA/Vulkan/Metal toolkits. Keep
+      # `bundle.externalBin` empty in the committed tauri.conf.json (tauri-build
+      # fails when the files are missing locally). Stage them here and enable
+      # the sidecar only for this job so the installer ships `bfi`.
+      - name: Build bfi sidecar (CPU)
+        run: cargo build --release -p bfi --target ${{ matrix.target }}
+      - name: Stage bfi sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/src-tauri/binaries
+          ext=""
+          if [[ "${{ matrix.target }}" == *-windows-* ]]; then ext=".exe"; fi
+          src="target/${{ matrix.target }}/release/bfi${ext}"
+          dest="app/src-tauri/binaries/bfi-${{ matrix.target }}${ext}"
+          cp "$src" "$dest"
+          node -e '
+            const fs = require("fs");
+            const p = "app/src-tauri/tauri.conf.json";
+            const j = JSON.parse(fs.readFileSync(p, "utf8"));
+            j.bundle.externalBin = ["binaries/bfi"];
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+          '
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

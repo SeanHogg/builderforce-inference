@@ -3,15 +3,13 @@
 //! Synapse ships and supervises [`runtime`] (`bfi serve`). [`hub`] says which models
 //! and quantizations this machine can run; [`chat`] answers a Brain turn with one;
 //! [`api`] serves it to every other AI tool in the OpenAI and Anthropic formats.
-//! [`Local`] holds the live pieces and the settings. [`ollama`] is the deprecated
-//! fallback (`SYNAPSE_USE_OLLAMA=1`).
+//! [`Local`] holds the live pieces and the settings.
 
 pub mod api;
 pub mod chat;
 pub mod desktop;
 pub mod fit;
 pub mod hub;
-pub mod ollama;
 pub mod runtime;
 pub mod settings;
 

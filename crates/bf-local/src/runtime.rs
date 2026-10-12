@@ -7,11 +7,7 @@
 //! stopped when this handle is dropped (Synapse quitting).
 //!
 //! [`version`], [`installed`], [`pull`] and [`delete`] speak bfi's Ollama-compatible
-//! `/api/*` (with the discovery token when `--auth` is on), so callers keep the same
-//! function signatures they used with [`crate::ollama`].
-//!
-//! Fallback: set `SYNAPSE_USE_OLLAMA=1` to keep driving a separately installed Ollama
-//! and skip the supervisor. [`crate::ollama`] stays as that deprecated path.
+//! `/api/*` (with the discovery token when `--auth` is on).
 
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
@@ -140,17 +136,8 @@ pub struct Handle {
 }
 
 impl Handle {
-    /// Start `bfi serve`, unless [`use_ollama_fallback`] is set.
+    /// Start `bfi serve` as a supervised child.
     pub fn start() -> Self {
-        if use_ollama_fallback() {
-            let h = Self::idle(crate::ollama::base());
-            if let Some(m) = crate::desktop::from_base(&h.base(), "", "") {
-                if crate::desktop::publish_default(&m).is_ok() {
-                    h.inner.published.store(true, Ordering::SeqCst);
-                }
-            }
-            return h;
-        }
         Self::start_with(Config::default())
     }
 
@@ -165,19 +152,6 @@ impl Handle {
         let run_inner = inner.clone();
         let thread = thread::Builder::new().name("synapse-bfi".into()).spawn(move || supervise(run_inner, cfg)).ok();
         Self { inner, thread: Mutex::new(thread) }
-    }
-
-    fn idle(base: String) -> Self {
-        Self {
-            inner: Arc::new(Inner {
-                stop: AtomicBool::new(false),
-                base: Mutex::new(base),
-                error: Mutex::new(None),
-                child: Mutex::new(None),
-                published: AtomicBool::new(false),
-            }),
-            thread: Mutex::new(None),
-        }
     }
 
     pub fn base(&self) -> String {
@@ -207,15 +181,6 @@ impl Drop for Handle {
     fn drop(&mut self) {
         self.stop();
     }
-}
-
-pub fn use_ollama_fallback() -> bool {
-    ollama_fallback_from_env(std::env::var("SYNAPSE_USE_OLLAMA").ok().as_deref())
-}
-
-/// `SYNAPSE_USE_OLLAMA` is 1/true/yes/on. Empty or unset prefers bfi.
-pub fn ollama_fallback_from_env(val: Option<&str>) -> bool {
-    matches!(val.unwrap_or("").to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
 }
 
 /// `Authorization: Bearer …` value for the live child, if `--auth` issued a token.
@@ -700,15 +665,16 @@ mod tests {
     }
 
     #[test]
-    fn runtime_prefers_bfi_unless_synapse_use_ollama() {
-        assert!(!ollama_fallback_from_env(None));
-        assert!(!ollama_fallback_from_env(Some("")));
-        assert!(!ollama_fallback_from_env(Some("0")));
-        assert!(!ollama_fallback_from_env(Some("off")));
-        assert!(ollama_fallback_from_env(Some("1")));
-        assert!(ollama_fallback_from_env(Some("true")));
-        assert!(ollama_fallback_from_env(Some("YES")));
-        assert!(ollama_fallback_from_env(Some("on")));
+    fn start_always_supervises_bfi() {
+        // Production Handle::start() is start_with(Config::default()) — no Ollama hatch.
+        // Empty args means spawn_bfi fills serve_args (auth + models-dir).
+        let cfg = Config::default();
+        assert!(cfg.bin.file_name().is_some());
+        assert!(cfg.args.is_empty());
+        let args = serve_args(&cfg.models_dir);
+        assert!(args.iter().any(|a| a == "serve"));
+        assert!(args.iter().any(|a| a == "--auth"));
+        assert!(args.iter().any(|a| a == "--models-dir"));
     }
 
     #[test]

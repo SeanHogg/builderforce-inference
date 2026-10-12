@@ -2,7 +2,7 @@
 
 **Synapse** — the Builderforce desktop app and local AI runtime. Run LLMs on your own machine, keep a private Evermind memory, host MCP connectors, and hand work to agents.
 
-> Status: Synapse currently drives an external Ollama install for local models. The native, pure-Rust engine that replaces it (`bfi`) is specified in [docs/PRD-native-engine.md](docs/PRD-native-engine.md) and is being implemented as the `bfi*` crates below.
+> Status: Synapse ships and supervises the native `bfi` engine for local models (see [docs/PRD-native-engine.md](docs/PRD-native-engine.md)).
 
 ## Layout
 
