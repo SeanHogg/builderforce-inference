@@ -2,7 +2,17 @@
 
 **Synapse** — the Builderforce desktop app and local AI runtime. Run LLMs on your own machine, keep a private Evermind memory, host MCP connectors, and hand work to agents.
 
-> Status: Synapse ships and supervises the native `bfi` engine for local models (see [docs/PRD-native-engine.md](docs/PRD-native-engine.md)).
+Synapse now runs models itself. Ollama is not required. The desktop app supervises `bfi serve`; a separately installed Ollama is not on the path. Keep `crates/bfi` `import-ollama` if you are converting an existing Ollama library.
+
+> Status: Synapse ships and supervises the native `bfi` engine for local models (see [docs/PRD-native-engine.md](docs/PRD-native-engine.md)). CPU sidecar ships. GPU 70% vs llama-bench and live Bonsai 27B identity are not claimed.
+
+## Install
+
+```sh
+cargo install --git https://github.com/SeanHogg/builderforce-inference bfi
+```
+
+GitHub Release binaries are not signed yet (owner signing secrets).
 
 ## Layout
 
@@ -12,7 +22,7 @@
 | `crates/bfi-gguf` | GGUF v2/v3 reader and GGML type registry (including PrismML `PQ2_0` / `PTQ1_0`) |
 | `crates/bfi-core` | Tensor + Backend trait; CPU reference kernels |
 | `crates/bfi-models` | Architecture registry (`qwen3` first, then `qwen35`) |
-| `crates/bfi-runtime` | Tokenizer, sampler, sequential `generate_batch` scheduler (one loaded model, no concurrent token mixing), prefix cache, grammar-constrained decode, embeddings, model store, `bfi fit` |
+| `crates/bfi-runtime` | Tokenizer, sampler, `mix_decode` concurrent token mixing and `generate_batch`, prefix cache, grammar-constrained decode, embeddings, model store, `bfi fit` |
 | `crates/bfi-server` | OpenAI / Anthropic / Ollama HTTP API |
 | `crates/bfi` | CLI: `pull`, `run`, `serve`, `fit`, `ls`, `rm`, `ps`, `bench` |
 | `crates/bf-local` | Local models: catalog, hardware fit, OpenAI/Anthropic-compatible loopback API |
