@@ -1,5 +1,7 @@
 # builderforce-inference
 
+> Part of [Builderforce open source](https://builderforce.ai/open-source): the MIT projects Builderforce.ai is built on.
+
 **Synapse** — the Builderforce desktop app and local AI runtime. Run LLMs on your own machine, keep a private Evermind memory, host MCP connectors, and hand work to agents.
 
 Synapse now runs models itself. Ollama is not required. The desktop app supervises `bfi serve`; a separately installed Ollama is not on the path. Keep `crates/bfi` `import-ollama` if you are converting an existing Ollama library.
