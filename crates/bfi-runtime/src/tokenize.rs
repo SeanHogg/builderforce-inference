@@ -4,8 +4,14 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use anyhow::{anyhow, bail, Result};
-use bfi_gguf::ModelHeader;
+use bfi_gguf::{MetaValue, ModelHeader};
 use fancy_regex::Regex;
+
+use crate::byte_level;
+
+/// GGUF `tokenizer.ggml.token_type` values that are matched verbatim in text
+/// (llama.cpp `LLAMA_TOKEN_TYPE_CONTROL` / `USER_DEFINED`), e.g. `<|im_start|>`.
+const SPECIAL_TOKEN_TYPES: [i64; 2] = [3, 4];
 
 /// Qwen2/Qwen3 pre-tokenizer (llama.cpp `LLAMA_VOCAB_PRE_TYPE_QWEN2`).
 const QWEN_PRE: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
@@ -38,6 +44,10 @@ pub struct Tokenizer {
     chat_template: Option<String>,
     /// Token id for each of the 256 bytes, if the vocab has a fallback.
     byte_id: [Option<u32>; 256],
+    /// `tokenizer.ggml.model == "gpt2"`: tokens are in the byte-level alphabet.
+    byte_level: bool,
+    /// Control / user-defined tokens, longest first, matched before BPE.
+    specials: Vec<(String, u32)>,
 }
 
 impl Tokenizer {
@@ -67,8 +77,20 @@ impl Tokenizer {
             PreTok::None
         };
         let chat_template = h.get_str("tokenizer.chat_template").map(|s| s.to_string());
+        let byte_level = h.get_str("tokenizer.ggml.model") == Some("gpt2");
+        let mut specials: Vec<(String, u32)> = match h.get("tokenizer.ggml.token_type") {
+            Some(MetaValue::Array(types)) => types
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| meta_int(v).is_some_and(|t| SPECIAL_TOKEN_TYPES.contains(&t)))
+                .filter_map(|(i, _)| tokens.get(i).map(|t| (t.clone(), i as u32)))
+                .filter(|(t, _)| !t.is_empty())
+                .collect(),
+            _ => Vec::new(),
+        };
+        specials.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
 
-        Ok(Self::build(
+        let mut tok = Self::build(
             tokens,
             &merges,
             bos_id,
@@ -79,7 +101,10 @@ impl Tokenizer {
             add_eos,
             pre,
             chat_template,
-        ))
+        );
+        tok.byte_level = byte_level;
+        tok.specials = specials;
+        Ok(tok)
     }
 
     /// Test / synthetic constructor. `merges` are `"left right"` pairs in rank order.
@@ -147,6 +172,8 @@ impl Tokenizer {
             pre,
             chat_template,
             byte_id,
+            byte_level: false,
+            specials: Vec::new(),
         }
     }
 
@@ -158,9 +185,14 @@ impl Tokenizer {
             }
         }
 
-        let pieces = self.pre_tokenize(text)?;
-        for piece in pieces {
-            ids.extend(self.bpe(&piece)?);
+        for (segment, special) in self.split_specials(text) {
+            if let Some(id) = special {
+                ids.push(id);
+                continue;
+            }
+            for piece in self.pre_tokenize(segment)? {
+                ids.extend(self.bpe(&piece)?);
+            }
         }
 
         if add_special && self.add_eos {
@@ -179,6 +211,8 @@ impl Tokenizer {
             };
             if let Some(b) = parse_byte_token(tok) {
                 bytes.push(b);
+            } else if self.byte_level {
+                byte_level::decode_into(tok, &mut bytes);
             } else {
                 bytes.extend_from_slice(tok.as_bytes());
             }
@@ -206,6 +240,38 @@ impl Tokenizer {
         self.chat_template.as_deref()
     }
 
+    /// Split `text` around special tokens: `(segment, None)` for ordinary text,
+    /// `(token_text, Some(id))` for a verbatim special token.
+    fn split_specials<'a>(&self, text: &'a str) -> Vec<(&'a str, Option<u32>)> {
+        if self.specials.is_empty() {
+            return vec![(text, None)];
+        }
+        let mut out = Vec::new();
+        let mut start = 0;
+        let mut i = 0;
+        while i < text.len() {
+            if !text.is_char_boundary(i) {
+                i += 1;
+                continue;
+            }
+            let rest = &text[i..];
+            if let Some((s, id)) = self.specials.iter().find(|(s, _)| rest.starts_with(s.as_str())) {
+                if start < i {
+                    out.push((&text[start..i], None));
+                }
+                out.push((&text[i..i + s.len()], Some(*id)));
+                i += s.len();
+                start = i;
+            } else {
+                i += 1;
+            }
+        }
+        if start < text.len() {
+            out.push((&text[start..], None));
+        }
+        out
+    }
+
     fn pre_tokenize(&self, text: &str) -> Result<Vec<String>> {
         if text.is_empty() {
             return Ok(Vec::new());
@@ -229,13 +295,17 @@ impl Tokenizer {
         }
 
         let mut word: Vec<String> = Vec::new();
-        for ch in piece.chars() {
-            let s = ch.to_string();
-            if self.token_to_id.contains_key(&s) {
-                word.push(s);
-            } else {
-                for b in s.into_bytes() {
-                    word.push(self.byte_symbol(b)?);
+        if self.byte_level {
+            word.extend(byte_level::encode_bytes(piece).map(|c| c.to_string()));
+        } else {
+            for ch in piece.chars() {
+                let s = ch.to_string();
+                if self.token_to_id.contains_key(&s) {
+                    word.push(s);
+                } else {
+                    for b in s.into_bytes() {
+                        word.push(self.byte_symbol(b)?);
+                    }
                 }
             }
         }
@@ -292,6 +362,16 @@ impl Tokenizer {
 
 fn meta_u32(h: &ModelHeader, key: &str) -> Option<u32> {
     h.get(key).and_then(|v| v.as_u64()).map(|x| x as u32)
+}
+
+fn meta_int(v: &MetaValue) -> Option<i64> {
+    match v {
+        MetaValue::I32(x) => Some(*x as i64),
+        MetaValue::I64(x) => Some(*x),
+        MetaValue::I8(x) => Some(*x as i64),
+        MetaValue::I16(x) => Some(*x as i64),
+        other => other.as_u64().map(|x| x as i64),
+    }
 }
 
 fn meta_bool(h: &ModelHeader, key: &str) -> Option<bool> {
@@ -430,5 +510,45 @@ mod tests {
         assert_eq!(tok.bos(), Some(0));
         assert_eq!(tok.eos(), Some(1));
         assert_eq!(tok.chat_template(), Some("{{ messages }}"));
+    }
+
+    /// Real Qwen GGUF shape: `gpt2` model, byte-level alphabet, control tokens.
+    fn byte_level_tok() -> Tokenizer {
+        let tokens = ["<|im_start|>", "<|im_end|>", "h", "i", "Ġ", "Ċ", "hi", "Ġhi", "user"];
+        let types = [3i32, 3, 1, 1, 1, 1, 1, 1, 1];
+        let mut meta = BTreeMap::new();
+        meta.insert(
+            "tokenizer.ggml.tokens".into(),
+            MetaValue::Array(tokens.iter().map(|s| MetaValue::String((*s).into())).collect()),
+        );
+        meta.insert(
+            "tokenizer.ggml.token_type".into(),
+            MetaValue::Array(types.iter().map(|t| MetaValue::I32(*t)).collect()),
+        );
+        meta.insert(
+            "tokenizer.ggml.merges".into(),
+            MetaValue::Array(
+                ["h i", "Ġ hi"].iter().map(|s| MetaValue::String((*s).into())).collect(),
+            ),
+        );
+        meta.insert("tokenizer.ggml.model".into(), MetaValue::String("gpt2".into()));
+        meta.insert("tokenizer.ggml.pre".into(), MetaValue::String("qwen2".into()));
+        let bytes = write_gguf(&meta, &[]).unwrap();
+        Tokenizer::from_header(&ModelHeader::from_bytes(&bytes).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn byte_level_space_and_newline() {
+        let tok = byte_level_tok();
+        assert_eq!(tok.encode("hi hi\n", false).unwrap(), vec![6, 7, 5]);
+        assert_eq!(tok.decode(&[6, 7, 5]).unwrap(), "hi hi\n");
+    }
+
+    #[test]
+    fn control_tokens_match_verbatim() {
+        let tok = byte_level_tok();
+        let ids = tok.encode("<|im_start|>hi\nhi<|im_end|>", false).unwrap();
+        assert_eq!(ids, vec![0, 6, 5, 6, 1]);
+        assert_eq!(tok.decode(&ids).unwrap(), "<|im_start|>hi\nhi<|im_end|>");
     }
 }

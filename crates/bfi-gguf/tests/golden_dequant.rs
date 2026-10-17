@@ -17,7 +17,10 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use bfi_gguf::{lookup_type, GgufFile, TYPE_F16, TYPE_PQ2_0, TYPE_PTQ1_0, TYPE_Q4_K, TYPE_Q5_K, TYPE_Q6_K, TYPE_Q8_0};
+use bfi_gguf::{
+    lookup_type, GgufFile, TYPE_F16, TYPE_PQ2_0, TYPE_PTQ1_0, TYPE_Q1_0, TYPE_Q4_K, TYPE_Q5_K,
+    TYPE_Q6_K, TYPE_Q8_0,
+};
 
 const GOLDEN_TYPES: &[(u32, &str)] = &[
     (TYPE_Q4_K, "Q4_K"),
@@ -27,6 +30,7 @@ const GOLDEN_TYPES: &[(u32, &str)] = &[
     (TYPE_F16, "F16"),
     (TYPE_PQ2_0, "PQ2_0"),
     (TYPE_PTQ1_0, "PTQ1_0"),
+    (TYPE_Q1_0, "Q1_0"),
 ];
 
 const BLOCKS_PER_TYPE: usize = 8;

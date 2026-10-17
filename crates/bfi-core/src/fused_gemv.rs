@@ -5,8 +5,10 @@
 //! this to max relative abs err ≤ 1e-3.
 
 use anyhow::{bail, Context, Result};
-use bfi_gguf::{lookup_type, vec_dot_pq2_0, vec_dot_ptq1_0, TYPE_PQ2_0, TYPE_PTQ1_0};
-use rayon::prelude::*;
+use bfi_gguf::{
+    lookup_type, vec_dot_pq2_0, vec_dot_ptq1_0, vec_dot_q1_0, TYPE_PQ2_0, TYPE_PTQ1_0, TYPE_Q1_0,
+};
+use crate::par;
 
 pub fn fused_gemv_pq2_0(
     weights: &[u8],
@@ -24,6 +26,16 @@ pub fn fused_gemv_ptq1_0(
     n_in: usize,
 ) -> Result<Vec<f32>> {
     gemv_typed(TYPE_PTQ1_0, weights, x, n_out, n_in, vec_dot_ptq1_0)
+}
+
+/// 1-bit Bonsai (`Q1_0`, group 128): `d * (Σ set − Σ clear)` per block.
+pub fn fused_gemv_q1_0(
+    weights: &[u8],
+    x: &[f32],
+    n_out: usize,
+    n_in: usize,
+) -> Result<Vec<f32>> {
+    gemv_typed(TYPE_Q1_0, weights, x, n_out, n_in, vec_dot_q1_0)
 }
 
 fn gemv_typed(
@@ -54,7 +66,7 @@ fn gemv_typed(
         );
     }
     let mut out = vec![0.0f32; n_out];
-    out.par_iter_mut().enumerate().for_each(|(o, dst)| {
+    par::for_each_indexed(&mut out, |o, dst| {
         let row = &weights[o * row_bytes..(o + 1) * row_bytes];
         let mut acc = 0.0f32;
         for b in 0..n_blocks {

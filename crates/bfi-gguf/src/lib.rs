@@ -3,26 +3,34 @@
 //! Type layouts (including PrismML `PQ2_0` / `PTQ1_0`) live in [`types`] so
 //! `bfi fit` can size a file from the header alone. Adding a GGML type means
 //! adding one table row in `types/mod.rs` and one file in `types/`.
+//!
+//! Bytes come from a [`ByteSource`] (mmap natively, owned on wasm32) or arrive
+//! incrementally through [`TensorStream`] (browser `ReadableStream`).
 
 mod error;
 mod f16;
 mod file;
 mod header;
+mod source;
+mod stream;
 mod types;
 pub mod writer;
 
 pub use error::{GgufError, Result};
 pub use f16::{bf16_to_f32, f16_to_f32, f32_to_bf16, f32_to_f16};
 pub use file::GgufFile;
+pub use source::ByteSource;
+pub use stream::{StreamedTensor, TensorStream};
 pub use header::{
     align_up, MetaValue, ModelHeader, TensorInfo, DEFAULT_ALIGNMENT, GGUF_MAGIC, HEADER_HINT_BYTES,
 };
 pub use types::{
     dequant_bf16, dequant_f16, dequant_f32, dequant_q4_0, dequant_q4_k, dequant_q5_k, dequant_q6_k,
-    dequant_q8_0, dequant_tensor, dequantize_row_pq2_0, dequantize_row_ptq1_0, lookup_type,
-    quantize_row_pq2_0, require_type, type_by_name, vec_dot_pq2_0, vec_dot_ptq1_0, vec_dot_q4_0,
-    vec_dot_q8_0, GgmlType, TYPE_BF16, TYPE_F16, TYPE_F32, TYPE_PQ2_0, TYPE_PTQ1_0, TYPE_Q4_0,
-    TYPE_Q4_K, TYPE_Q5_K, TYPE_Q6_K, TYPE_Q8_0, TYPES,
+    dequant_q8_0, dequant_tensor, dequantize_row_pq2_0, dequantize_row_ptq1_0, dequantize_row_q1_0,
+    lookup_type, quantize_row_pq2_0, quantize_row_q1_0, require_type, type_by_name, vec_dot_pq2_0,
+    vec_dot_ptq1_0, vec_dot_q1_0, vec_dot_q4_0, vec_dot_q8_0, GgmlType, TYPE_BF16, TYPE_F16,
+    TYPE_F32, TYPE_PQ2_0, TYPE_PTQ1_0, TYPE_Q1_0, TYPE_Q4_0, TYPE_Q4_K, TYPE_Q5_K, TYPE_Q6_K,
+    TYPE_Q8_0, TYPES,
 };
 
 #[cfg(test)]

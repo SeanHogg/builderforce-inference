@@ -6,10 +6,10 @@ use axum::extract::State;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use bfi_runtime::openai::{chunk_value, completion_value, tool_calls_value, usage_value};
 use bfi_runtime::{
-    apply_chat_template, list_models, model_path, parse_tool_calls, parse_tool_choice,
-    parse_tool_specs, tools_system_block, ChatMessage, Engine, InstalledModel, SampleParams,
-    ToolChoice, ToolSpec,
+    apply_tools, content_text, list_models, model_path, parse_tool_calls, prepend_tools_block,
+    render_prompt, to_chat_messages, ChatMessage, Engine, InstalledModel, SampleParams,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -120,37 +120,7 @@ pub struct ChatCompletionRequest {
     grammar: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct IncomingMessage {
-    #[serde(default)]
-    role: String,
-    #[serde(default)]
-    content: Value,
-    /// OpenAI tool-call results / assistant tool_calls.
-    #[serde(default)]
-    tool_calls: Option<Value>,
-    #[serde(default)]
-    tool_call_id: Option<String>,
-}
-
-impl IncomingMessage {
-    fn text(&self) -> String {
-        let mut s = content_text(&self.content);
-        if let Some(calls) = &self.tool_calls {
-            if !s.is_empty() {
-                s.push('\n');
-            }
-            s.push_str(&calls.to_string());
-        }
-        if let Some(id) = &self.tool_call_id {
-            if !s.is_empty() {
-                s.push(' ');
-            }
-            s.push_str(id);
-        }
-        s
-    }
-}
+pub use bfi_runtime::IncomingMessage;
 
 #[derive(Debug, Deserialize)]
 pub struct CompletionRequest {
@@ -586,7 +556,7 @@ async fn generate_chat(
         let mut slot = state.inner.engine.lock();
         ensure_loaded(&mut slot, state.inner.model_path.as_deref(), &model)?;
         let loaded = slot.as_mut().ok_or(ApiError::NoModel)?;
-        let prompt = render_prompt(&loaded.engine, &messages);
+        let prompt = render_prompt(loaded.engine.chat_template(), &messages);
         let text = loaded
             .engine
             .generate(&prompt, params)
@@ -685,122 +655,6 @@ fn resolve_model(name: &str) -> PathBuf {
     }
 }
 
-fn render_prompt(engine: &Engine, messages: &[ChatMessage]) -> String {
-    match engine.chat_template() {
-        Some(t) if !t.is_empty() => {
-            apply_chat_template(t, messages, true).unwrap_or_else(|_| naive_prompt(messages))
-        }
-        _ => naive_prompt(messages),
-    }
-}
-
-fn naive_prompt(messages: &[ChatMessage]) -> String {
-    let mut s = String::new();
-    for m in messages {
-        s.push_str(&m.role);
-        s.push_str(": ");
-        s.push_str(&m.content);
-        s.push('\n');
-    }
-    s.push_str("assistant: ");
-    s
-}
-
-fn to_chat_messages(raw: &[IncomingMessage]) -> Vec<ChatMessage> {
-    raw.iter()
-        .map(|m| ChatMessage {
-            role: if m.role.is_empty() { "user".into() } else { m.role.clone() },
-            content: m.text(),
-        })
-        .collect()
-}
-
-fn content_text(v: &Value) -> String {
-    match v {
-        Value::Null => String::new(),
-        Value::String(s) => s.clone(),
-        Value::Array(items) => items.iter().map(content_block_text).collect::<Vec<_>>().join(""),
-        Value::Object(_) => content_block_text(v),
-        other => other.to_string(),
-    }
-}
-
-/// OpenAI / Anthropic content blocks, including `tool_use` and `tool_result`.
-fn content_block_text(item: &Value) -> String {
-    match item {
-        Value::String(s) => s.clone(),
-        Value::Object(o) => {
-            let ty = o.get("type").and_then(Value::as_str).unwrap_or("");
-            if let Some(s) = o.get("text").and_then(Value::as_str) {
-                return s.to_string();
-            }
-            match ty {
-                "tool_use" => {
-                    let name = o.get("name").and_then(Value::as_str).unwrap_or("tool");
-                    let id = o.get("id").and_then(Value::as_str).unwrap_or("");
-                    let input = o.get("input").cloned().unwrap_or(Value::Null);
-                    format!("[tool_use {id} {name} {input}]")
-                }
-                "tool_result" => {
-                    let id = o
-                        .get("tool_use_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    let inner = o.get("content").map(content_text).unwrap_or_default();
-                    format!("[tool_result {id} {inner}]")
-                }
-                _ => o
-                    .get("content")
-                    .map(content_text)
-                    .unwrap_or_default(),
-            }
-        }
-        other => other.to_string(),
-    }
-}
-
-fn apply_tools(
-    params: &mut SampleParams,
-    tools_val: Option<&Value>,
-    choice_val: Option<&Value>,
-) -> Result<(Vec<ToolSpec>, bool), String> {
-    let tools: Vec<ToolSpec> = match tools_val {
-        None | Some(Value::Null) => vec![],
-        Some(v) => parse_tool_specs(v)?,
-    };
-    let mut choice = parse_tool_choice(choice_val)?;
-    if !tools.is_empty() && choice_val.is_none() {
-        choice = ToolChoice::Auto;
-    }
-    if matches!(choice, ToolChoice::Required) && tools.is_empty() {
-        return Err("tool_choice 'required' needs a non-empty tools array".into());
-    }
-    if let ToolChoice::Named(ref n) = choice {
-        if !tools.iter().any(|t| &t.name == n) {
-            return Err(format!("tool_choice function '{n}' is not in tools"));
-        }
-    }
-    params.tool_choice = choice;
-    params.tool_names = tools.iter().map(|t| t.name.clone()).collect();
-    if params.tool_choice.constrains() {
-        params.json_object = true;
-    }
-    let tools_on = !params.tool_names.is_empty() && !matches!(params.tool_choice, ToolChoice::None);
-    Ok((tools, tools_on))
-}
-
-fn prepend_tools_block(messages: &mut Vec<ChatMessage>, tools: &[ToolSpec], choice: &ToolChoice) {
-    if let Some(block) = tools_system_block(tools, choice) {
-        messages.insert(
-            0,
-            ChatMessage {
-                role: "system".into(),
-                content: block,
-            },
-        );
-    }
-}
-
 fn apply_output_constraint(
     params: &mut SampleParams,
     c: OutputConstraint,
@@ -833,7 +687,7 @@ fn installed() -> Vec<InstalledModel> {
 }
 
 fn dummy_usage() -> Value {
-    json!({ "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 })
+    usage_value(0, 0)
 }
 
 fn now_secs() -> u64 {
@@ -863,39 +717,19 @@ fn openai_embeddings(model: &str, vectors: &[Vec<f32>]) -> Value {
 }
 
 fn openai_chat(model: &str, text: &str, tools_on: bool) -> Value {
-    if tools_on {
-        if let Some(calls) = parse_tool_calls(text) {
-            let tool_calls: Vec<Value> = calls.iter().map(|c| c.openai_json()).collect();
-            return json!({
-                "id": "chatcmpl-bfi",
-                "object": "chat.completion",
-                "created": now_secs(),
-                "model": model,
-                "choices": [{
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": null,
-                        "tool_calls": tool_calls
-                    },
-                    "finish_reason": "tool_calls"
-                }],
-                "usage": dummy_usage()
-            });
-        }
+    let calls = if tools_on { parse_tool_calls(text) } else { None };
+    match calls {
+        Some(calls) => completion_value(
+            "chatcmpl-bfi",
+            now_secs(),
+            model,
+            None,
+            Some(&calls),
+            "tool_calls",
+            dummy_usage(),
+        ),
+        None => completion_value("chatcmpl-bfi", now_secs(), model, Some(text), None, "stop", dummy_usage()),
     }
-    json!({
-        "id": "chatcmpl-bfi",
-        "object": "chat.completion",
-        "created": now_secs(),
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "message": { "role": "assistant", "content": text },
-            "finish_reason": "stop"
-        }],
-        "usage": dummy_usage()
-    })
 }
 
 fn anthropic_message(model: &str, text: &str, tools_on: bool) -> Value {
@@ -925,41 +759,16 @@ fn anthropic_message(model: &str, text: &str, tools_on: bool) -> Value {
 }
 
 fn sse_chat(model: &str, text: &str, tools_on: bool) -> Response {
-    let chunk = if tools_on {
-        if let Some(calls) = parse_tool_calls(text) {
-            let tool_calls: Vec<Value> = calls.iter().map(|c| c.openai_json()).collect();
-            json!({
-                "id": "chatcmpl-bfi",
-                "object": "chat.completion.chunk",
-                "created": now_secs(),
-                "model": model,
-                "choices": [{
-                    "index": 0,
-                    "delta": {
-                        "role": "assistant",
-                        "content": null,
-                        "tool_calls": tool_calls
-                    },
-                    "finish_reason": "tool_calls"
-                }]
-            })
-        } else {
-            json!({
-                "id": "chatcmpl-bfi",
-                "object": "chat.completion.chunk",
-                "created": now_secs(),
-                "model": model,
-                "choices": [{ "index": 0, "delta": { "content": text }, "finish_reason": null }]
-            })
-        }
-    } else {
-        json!({
-            "id": "chatcmpl-bfi",
-            "object": "chat.completion.chunk",
-            "created": now_secs(),
-            "model": model,
-            "choices": [{ "index": 0, "delta": { "content": text }, "finish_reason": null }]
-        })
+    let calls = if tools_on { parse_tool_calls(text) } else { None };
+    let chunk = match calls {
+        Some(calls) => chunk_value(
+            "chatcmpl-bfi",
+            now_secs(),
+            model,
+            json!({ "role": "assistant", "content": null, "tool_calls": tool_calls_value(&calls) }),
+            Some("tool_calls"),
+        ),
+        None => chunk_value("chatcmpl-bfi", now_secs(), model, json!({ "content": text }), None),
     };
     let body = format!("data: {chunk}\n\ndata: [DONE]\n\n");
     (
@@ -1098,6 +907,7 @@ fn pull_ndjson_body() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bfi_runtime::ToolChoice;
 
     #[test]
     fn apply_constraint_json_object_sets_flag() {

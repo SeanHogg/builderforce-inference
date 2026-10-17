@@ -1,0 +1,34 @@
+{
+  "name": "@seanhogg/bfi-web",
+  "version": "2026.10.4",
+  "description": "bfi in the browser: 1-bit Bonsai (GGUF Q1_0) on WebGPU. The BfiEngine class from Builderforce spec 34 §3.1.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SeanHogg/builderforce-inference",
+    "directory": "crates/bfi-web"
+  },
+  "type": "module",
+  "module": "pkg/bfi_web.js",
+  "main": "pkg/bfi_web.js",
+  "types": "pkg/bfi_web.d.ts",
+  "exports": {
+    ".": {
+      "types": "./pkg/bfi_web.d.ts",
+      "import": "./pkg/bfi_web.js"
+    },
+    "./bfi_web_bg.wasm": "./pkg/bfi_web_bg.wasm"
+  },
+  "files": [
+    "pkg/bfi_web.js",
+    "pkg/bfi_web.d.ts",
+    "pkg/bfi_web_bg.wasm",
+    "pkg/bfi_web_bg.wasm.d.ts",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "keywords": ["webgpu", "wasm", "llm", "gguf", "bonsai", "inference"],
+  "scripts": {
+    "build": "wasm-pack build . --target web --release --out-dir pkg"
+  }
+}

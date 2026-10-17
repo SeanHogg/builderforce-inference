@@ -1,10 +1,13 @@
-//! CubeCL fused GEMV kernels for PQ2_0 / PTQ1_0 (M1).
+//! CubeCL fused GEMV kernels for PQ2_0 / PTQ1_0 (M1) and the host launcher
+//! for Q1_0, whose `#[cube]` kernel lives in [`crate::kernels::gemm`] so the
+//! native backend and the WebGPU resident path share one implementation.
 //!
 //! Compiled only when a GPU feature (`cuda`/`rocm`/`vulkan`/`metal`) is on.
 
 use cubecl::prelude::*;
 
-use crate::fused_gemv::{fused_gemv_pq2_0, fused_gemv_ptq1_0};
+use crate::fused_gemv::{fused_gemv_pq2_0, fused_gemv_ptq1_0, fused_gemv_q1_0};
+use crate::kernels::{gemm::gemm_q1_0, gemm_cubes, lanes};
 
 #[cube(launch_unchecked)]
 fn gemv_pq2(
@@ -188,6 +191,65 @@ pub fn launch_gemv_ptq1<R: Runtime>(
     }
     let bytes = client.read_one_unchecked(out_h);
     f32_from_bytes(&bytes)[..n].to_vec()
+}
+
+/// Raw GGUF bytes padded to whole `u32` words (kernels read words, unpack bytes).
+pub fn padded_words(bytes: &[u8]) -> Vec<u8> {
+    let mut v = bytes.to_vec();
+    v.resize(bytes.len().div_ceil(4) * 4, 0);
+    v
+}
+
+/// Q1_0 GEMV: weights uploaded exactly as packed (18 B / 128 weights).
+pub fn launch_gemv_q1<R: Runtime>(
+    client: &ComputeClient<R>,
+    weights: &[u8],
+    x: &[f32],
+    n_out: u32,
+    n_in: u32,
+) -> Vec<f32> {
+    let words = padded_words(weights);
+    let n_words = words.len() / 4;
+    let w_h = client.create_from_slice(&words);
+    let x_h = client.create_from_slice(as_u8_f32(x));
+    let n = n_out as usize;
+    let out_h = client.empty(n * 4);
+    let (count, row_stride) = gemm_cubes(n_out, 1);
+    unsafe {
+        gemm_q1_0::launch_unchecked::<R>(
+            client,
+            count,
+            lanes(),
+            ArrayArg::from_raw_parts(w_h, n_words),
+            ArrayArg::from_raw_parts(x_h, x.len()),
+            ArrayArg::from_raw_parts(out_h.clone(), n),
+            n_out,
+            n_in,
+            1u32,
+            row_stride,
+        );
+    }
+    let bytes = client.read_one_unchecked(out_h);
+    f32_from_bytes(&bytes)[..n].to_vec()
+}
+
+pub fn gemv_q1_or_cpu<R: Runtime>(
+    client: &ComputeClient<R>,
+    weights: &[u8],
+    x: &[f32],
+    n_out: usize,
+    n_in: usize,
+) -> anyhow::Result<Vec<f32>> {
+    if n_in % 128 != 0 || weights.len() != n_out * (n_in / 128) * 18 {
+        anyhow::bail!("q1_0 gemv: bytes {} do not match {n_out}x{n_in}", weights.len());
+    }
+    let launched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        launch_gemv_q1::<R>(client, weights, x, n_out as u32, n_in as u32)
+    }));
+    match launched {
+        Ok(y) => Ok(y),
+        Err(_) => fused_gemv_q1_0(weights, x, n_out, n_in),
+    }
 }
 
 /// Host packing + kernel launch. Falls back to the portable fused GEMV if the

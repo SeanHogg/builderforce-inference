@@ -23,18 +23,18 @@ inventory::submit! {
     ArchReg(&QWEN3)
 }
 
-struct Qwen3Config {
-    n_layer: usize,
-    n_embd: usize,
-    n_ff: usize,
-    n_vocab: usize,
-    n_ctx: usize,
-    n_head: usize,
-    n_head_kv: usize,
-    head_dim: usize,
-    rms_eps: f32,
-    rope_freq_base: f32,
-    n_rot: usize,
+pub(crate) struct Qwen3Config {
+    pub(crate) n_layer: usize,
+    pub(crate) n_embd: usize,
+    pub(crate) n_ff: usize,
+    pub(crate) n_vocab: usize,
+    pub(crate) n_ctx: usize,
+    pub(crate) n_head: usize,
+    pub(crate) n_head_kv: usize,
+    pub(crate) head_dim: usize,
+    pub(crate) rms_eps: f32,
+    pub(crate) rope_freq_base: f32,
+    pub(crate) n_rot: usize,
 }
 
 struct Qwen3Layer {
@@ -116,6 +116,8 @@ impl Architecture for Qwen3Arch {
             beta_slow: 1.0,
             n_rot: cfg.n_rot,
             sections: None,
+            // llama.cpp `llama_model_rope_type`: QWEN3 → LLAMA_ROPE_TYPE_NEOX.
+            neox: true,
         };
 
         Ok(Box::new(Qwen3Model {
@@ -250,7 +252,7 @@ impl Model for Qwen3Model {
     }
 }
 
-fn parse_config(h: &ModelHeader) -> anyhow::Result<Qwen3Config> {
+pub(crate) fn parse_config(h: &ModelHeader) -> anyhow::Result<Qwen3Config> {
     let n_layer = arch_usize(h, "block_count")?;
     let n_embd = arch_usize(h, "embedding_length")?;
     let n_ff = arch_usize(h, "feed_forward_length")?;

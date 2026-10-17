@@ -4,7 +4,7 @@ use crate::tensor::{n_elems_of, Storage, Tensor};
 use crate::DType;
 use anyhow::{anyhow, bail, Context};
 use bfi_gguf::{dequant_tensor, lookup_type, GgmlType};
-use rayon::prelude::*;
+use crate::par;
 
 pub struct CpuBackend;
 
@@ -161,7 +161,7 @@ impl Backend for CpuBackend {
 
     fn silu(&self, x: &Tensor) -> anyhow::Result<Tensor> {
         let x_f = x.as_f32()?;
-        let out: Vec<f32> = x_f.par_iter().copied().map(silu_f).collect();
+        let out: Vec<f32> = par::map(x_f, |&v| silu_f(v));
         Ok(Tensor::f32(x.shape.clone(), out))
     }
 
@@ -174,23 +174,19 @@ impl Backend for CpuBackend {
                 format!("gate {} vs up {}", g.len(), u.len()),
             ));
         }
-        let out: Vec<f32> = g
-            .par_iter()
-            .zip(u.par_iter())
-            .map(|(&gv, &uv)| silu_f(gv) * uv)
-            .collect();
+        let out: Vec<f32> = par::zip_map(g, u, |&gv, &uv| silu_f(gv) * uv);
         Ok(Tensor::f32(gate.shape.clone(), out))
     }
 
     fn sigmoid(&self, x: &Tensor) -> anyhow::Result<Tensor> {
         let x_f = x.as_f32()?;
-        let out: Vec<f32> = x_f.par_iter().copied().map(sigmoid_f).collect();
+        let out: Vec<f32> = par::map(x_f, |&v| sigmoid_f(v));
         Ok(Tensor::f32(x.shape.clone(), out))
     }
 
     fn softplus(&self, x: &Tensor) -> anyhow::Result<Tensor> {
         let x_f = x.as_f32()?;
-        let out: Vec<f32> = x_f.par_iter().copied().map(softplus_f).collect();
+        let out: Vec<f32> = par::map(x_f, |&v| softplus_f(v));
         Ok(Tensor::f32(x.shape.clone(), out))
     }
 
@@ -507,13 +503,13 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
 fn matmul_f32(w: &[f32], x: &[f32], out: &mut [f32], n_tokens: usize, n_out: usize, n_in: usize) {
     if n_tokens <= 1 {
         let xrow = x;
-        out.par_iter_mut().enumerate().for_each(|(o, dst)| {
+        par::for_each_indexed(out, |o, dst| {
             let wr = &w[o * n_in..(o + 1) * n_in];
             *dst = dot(wr, xrow);
         });
         return;
     }
-    out.par_chunks_mut(n_out).enumerate().for_each(|(t, row)| {
+    par::for_each_chunk_indexed(out, n_out, |t, row| {
         let xr = &x[t * n_in..(t + 1) * n_in];
         for o in 0..n_out {
             let wr = &w[o * n_in..(o + 1) * n_in];
@@ -539,18 +535,15 @@ fn matmul_quant(
     }
     let row_blocks = n_in / ty.block_elems;
     let row_bytes = row_blocks * ty.block_bytes;
-    let cols: Vec<Vec<f32>> = (0..n_out)
-        .into_par_iter()
-        .map(|o| {
-            let wrow = &bytes[o * row_bytes..(o + 1) * row_bytes];
-            let mut col = vec![0.0f32; n_tokens];
-            for t in 0..n_tokens {
-                let xr = &x[t * n_in..(t + 1) * n_in];
-                col[t] = vec_dot_row(ty, wrow, xr);
-            }
-            col
-        })
-        .collect();
+    let cols: Vec<Vec<f32>> = par::range_map(n_out, |o| {
+        let wrow = &bytes[o * row_bytes..(o + 1) * row_bytes];
+        let mut col = vec![0.0f32; n_tokens];
+        for t in 0..n_tokens {
+            let xr = &x[t * n_in..(t + 1) * n_in];
+            col[t] = vec_dot_row(ty, wrow, xr);
+        }
+        col
+    });
     for o in 0..n_out {
         for t in 0..n_tokens {
             out[t * n_out + o] = cols[o][t];
@@ -625,6 +618,8 @@ fn rope_impl(
                 } else {
                     apply_rope_pairs(row, p, n_rot, params.freq_base, params.freq_scale, attn);
                 }
+            } else if params.neox {
+                apply_rope_neox(row, p, n_rot, params.freq_base, params.freq_scale, attn);
             } else {
                 apply_rope_pairs(row, p, n_rot, params.freq_base, params.freq_scale, attn);
             }
@@ -648,6 +643,30 @@ fn apply_rope_pairs(row: &mut [f32], pos: f32, n_rot: usize, freq_base: f32, fre
         let x1 = row[i + 1];
         row[i] = x0 * cos - x1 * sin;
         row[i + 1] = x0 * sin + x1 * cos;
+    }
+}
+
+/// NEOX layout (llama.cpp `LLAMA_ROPE_TYPE_NEOX`, used by qwen2/qwen3): dim `i`
+/// pairs with `i + n_rot/2`, frequency index `i` in `0..n_rot/2`.
+pub(crate) fn apply_rope_neox(
+    row: &mut [f32],
+    pos: f32,
+    n_rot: usize,
+    freq_base: f32,
+    freq_scale: f32,
+    attn: f32,
+) {
+    let n_rot = n_rot.min(row.len());
+    let half = n_rot / 2;
+    for i in 0..half {
+        let theta = (pos * freq_scale) / freq_base.powf((2 * i) as f32 / n_rot as f32);
+        let (sin, cos) = theta.sin_cos();
+        let cos = cos * attn;
+        let sin = sin * attn;
+        let x0 = row[i];
+        let x1 = row[i + half];
+        row[i] = x0 * cos - x1 * sin;
+        row[i + half] = x0 * sin + x1 * cos;
     }
 }
 
@@ -805,6 +824,7 @@ mod tests {
             beta_slow: 1.0,
             n_rot,
             sections: None,
+            neox: false,
         }
     }
 
@@ -986,6 +1006,7 @@ mod tests {
             bfi_gguf::TYPE_Q6_K,
             bfi_gguf::TYPE_PQ2_0,
             bfi_gguf::TYPE_PTQ1_0,
+            bfi_gguf::TYPE_Q1_0,
         ] {
             let dt = DType::from_ggml(id).unwrap();
             assert_eq!(dt.ggml_id(), id);
@@ -1006,5 +1027,23 @@ mod tests {
         for (x, y) in aa.iter().zip(bb) {
             assert!((x - y).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn rope_neox_pairs_i_with_i_plus_half() {
+        // pos 0 is the identity; pos 1 rotates (x[0], x[2]) and (x[1], x[3]).
+        let data = vec![1.0, 0.0, 0.0, 0.0];
+        let mut p = rope_params(4);
+        p.neox = true;
+        let mut a = Tensor::f32(vec![1, 1, 4], data.clone());
+        cpu().rope(&mut a, &[0], &p).unwrap();
+        assert_eq!(a.as_f32().unwrap(), &data[..]);
+        let mut b = Tensor::f32(vec![1, 1, 4], data);
+        cpu().rope(&mut b, &[1], &p).unwrap();
+        let v = b.as_f32().unwrap();
+        assert!((v[0] - 1f32.cos()).abs() < 1e-6, "{v:?}");
+        assert!((v[2] - 1f32.sin()).abs() < 1e-6, "{v:?}");
+        assert!(v[1].abs() < 1e-6 && v[3].abs() < 1e-6, "{v:?}");
+        assert!((l2(v) - 1.0).abs() < 1e-5);
     }
 }

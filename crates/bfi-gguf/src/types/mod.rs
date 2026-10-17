@@ -2,7 +2,8 @@
 //!
 //! Adding a type = one table row below + one file in this directory.
 //! PQ2_0 (id 142) and PTQ1_0 (id 143) match the PrismML llama.cpp fork
-//! (`ggml-common.h` / `ggml-quants.c`). Ported files keep the MIT notice.
+//! (`ggml-common.h` / `ggml-quants.c`), as does Q1_0 (id 41, 1-bit Bonsai).
+//! Ported files keep the MIT notice.
 
 mod bf16;
 mod f16;
@@ -10,6 +11,7 @@ mod f32;
 mod k_scale;
 mod pq2_0;
 mod ptq1_0;
+mod q1_0;
 mod q4_0;
 mod q4_k;
 mod q5_k;
@@ -21,6 +23,7 @@ pub use f16::dequant_f16;
 pub use f32::dequant_f32;
 pub use pq2_0::{dequantize_row_pq2_0, quantize_row_pq2_0, vec_dot_pq2_0};
 pub use ptq1_0::{dequantize_row_ptq1_0, vec_dot_ptq1_0};
+pub use q1_0::{dequantize_row_q1_0, quantize_row_q1_0, vec_dot_q1_0};
 pub use q4_0::{dequant_q4_0, vec_dot_q4_0};
 pub use q4_k::dequant_q4_k;
 pub use q5_k::dequant_q5_k;
@@ -37,6 +40,8 @@ pub const TYPE_Q4_K: u32 = 12;
 pub const TYPE_Q5_K: u32 = 13;
 pub const TYPE_Q6_K: u32 = 14;
 pub const TYPE_BF16: u32 = 30;
+/// PrismML 1-bit: 128 sign bits + f16 scale (18 bytes). Fork `ggml.h` id 41.
+pub const TYPE_Q1_0: u32 = 41;
 /// PrismML packed 2-bit. Identical layout to llama.cpp `Q2_0` (id 42).
 pub const TYPE_PQ2_0: u32 = 142;
 /// PrismML packed ternary. Identical layout to llama.cpp `TQ1_0` (id 34) with QK=128.
@@ -92,7 +97,7 @@ const fn t(
     }
 }
 
-/// Types we load in M1/M2. Anything else is an error that names the id.
+/// Types we load (M1/M2 + Q1_0 for the browser engine). Anything else is an error that names the id.
 pub static TYPES: &[GgmlType] = &[
     t(
         TYPE_F32,
@@ -153,6 +158,14 @@ pub static TYPES: &[GgmlType] = &[
         crate::types::ptq1_0::dequantize_row_ptq1_0,
         Some(crate::types::ptq1_0::vec_dot_ptq1_0),
     ),
+    t(
+        TYPE_Q1_0,
+        "Q1_0",
+        crate::types::q1_0::QK1_0,
+        crate::types::q1_0::BLOCK_Q1_0_BYTES,
+        crate::types::q1_0::dequantize_row_q1_0,
+        Some(crate::types::q1_0::vec_dot_q1_0),
+    ),
 ];
 
 pub fn lookup_type(id: u32) -> Option<&'static GgmlType> {
@@ -198,12 +211,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_has_exactly_the_m2_types() {
+    fn registry_has_exactly_the_supported_types() {
         let names: Vec<&str> = TYPES.iter().map(|t| t.name).collect();
         assert_eq!(
             names,
             [
-                "F32", "F16", "Q4_0", "Q8_0", "Q4_K", "Q5_K", "Q6_K", "BF16", "PQ2_0", "PTQ1_0"
+                "F32", "F16", "Q4_0", "Q8_0", "Q4_K", "Q5_K", "Q6_K", "BF16", "PQ2_0", "PTQ1_0",
+                "Q1_0"
             ]
         );
     }

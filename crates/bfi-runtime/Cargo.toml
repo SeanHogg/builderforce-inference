@@ -13,8 +13,11 @@ bfi-models = { path = "../bfi-models" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-minijinja.workspace = true
+# `json` = the `tojson` filter HF chat templates use for tools.
+minijinja = { workspace = true, features = ["json"] }
 fancy-regex.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dirs.workspace = true

@@ -5,6 +5,9 @@
 
 use serde_json::{json, Value};
 
+use crate::chat::ChatMessage;
+use crate::sample::SampleParams;
+
 /// One function the model may call.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolSpec {
@@ -200,6 +203,53 @@ pub fn tools_system_block(tools: &[ToolSpec], choice: &ToolChoice) -> Option<Str
         _ => {}
     }
     Some(s)
+}
+
+/// Apply a request's `tools` / `tool_choice` to `params`. Returns the parsed
+/// tools and whether tool calling is on. A `required` or named choice also
+/// constrains decode to a JSON object.
+pub fn apply_tools(
+    params: &mut SampleParams,
+    tools_val: Option<&Value>,
+    choice_val: Option<&Value>,
+) -> Result<(Vec<ToolSpec>, bool), String> {
+    let tools: Vec<ToolSpec> = match tools_val {
+        None | Some(Value::Null) => vec![],
+        Some(v) => parse_tool_specs(v)?,
+    };
+    let mut choice = parse_tool_choice(choice_val)?;
+    if !tools.is_empty() && choice_val.is_none() {
+        choice = ToolChoice::Auto;
+    }
+    if matches!(choice, ToolChoice::Required) && tools.is_empty() {
+        return Err("tool_choice 'required' needs a non-empty tools array".into());
+    }
+    if let ToolChoice::Named(ref n) = choice {
+        if !tools.iter().any(|t| &t.name == n) {
+            return Err(format!("tool_choice function '{n}' is not in tools"));
+        }
+    }
+    params.tool_choice = choice;
+    params.tool_names = tools.iter().map(|t| t.name.clone()).collect();
+    if params.tool_choice.constrains() {
+        params.json_object = true;
+    }
+    let tools_on = !params.tool_names.is_empty() && !matches!(params.tool_choice, ToolChoice::None);
+    Ok((tools, tools_on))
+}
+
+/// Prepend the [`tools_system_block`] as a system message (templates that do
+/// not render `tools` themselves).
+pub fn prepend_tools_block(messages: &mut Vec<ChatMessage>, tools: &[ToolSpec], choice: &ToolChoice) {
+    if let Some(block) = tools_system_block(tools, choice) {
+        messages.insert(
+            0,
+            ChatMessage {
+                role: "system".into(),
+                content: block,
+            },
+        );
+    }
 }
 
 /// Parse a complete tool call from decoded text. `None` if not (yet) a call.

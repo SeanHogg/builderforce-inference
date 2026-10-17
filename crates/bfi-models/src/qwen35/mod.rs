@@ -184,6 +184,7 @@ impl Architecture for Qwen35Arch {
             beta_slow: 1.0,
             n_rot: cfg.n_rot,
             sections: Some(sections),
+            neox: false,
         };
 
         Ok(Box::new(Qwen35Model {

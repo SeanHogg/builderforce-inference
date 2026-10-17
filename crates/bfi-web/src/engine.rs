@@ -1,0 +1,174 @@
+//! The exported `BfiEngine` class. Owns the WebGPU device and at most one
+//! loaded model; `load` / `chat` are exclusive (a second call while one runs
+//! rejects with `busy:`), `unload` during a chat aborts it.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use bfi_core::resident::{open_webgpu, Gpu};
+use js_sys::{Function, Object, Promise};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::future_to_promise;
+
+use crate::errors::{error, Kind};
+use crate::loader::{self, Loaded};
+use crate::support::{self, AdapterInfo};
+
+#[wasm_bindgen(typescript_custom_section)]
+const TS_TYPES: &'static str = r#"
+export interface BfiModelInfo { arch: string; contextTokens: number; vocab: number; params: number }
+export interface BfiSupport { supported: boolean; reason?: string; maxBufferBytes: number; f16: boolean }
+"#;
+
+struct State {
+    gpu: Gpu,
+    adapter: AdapterInfo,
+    model: Option<Loaded>,
+    busy: bool,
+    unload_requested: bool,
+}
+
+/// bfi on WebGPU. See the crate docs and `README.md` for the JS contract.
+#[wasm_bindgen]
+pub struct BfiEngine {
+    state: Rc<RefCell<State>>,
+}
+
+#[wasm_bindgen]
+impl BfiEngine {
+    /// WebGPU adapter + device (`shader-f16` is requested when offered).
+    /// Rejects with `webgpu_unavailable: <reason>` when there is no adapter.
+    pub async fn create() -> Result<BfiEngine, JsValue> {
+        console_error_panic_hook::set_once();
+        let adapter = support::probe().await;
+        if !adapter.supported {
+            return Err(error(
+                Kind::WebgpuUnavailable,
+                adapter.reason.clone().unwrap_or_else(|| "no adapter".into()),
+            ));
+        }
+        // CubeCL awaits requestAdapter/requestDevice itself (wasm cannot block).
+        let gpu = open_webgpu().await;
+        Ok(BfiEngine {
+            state: Rc::new(RefCell::new(State {
+                gpu,
+                adapter,
+                model: None,
+                busy: false,
+                unload_requested: false,
+            })),
+        })
+    }
+
+    /// Adapter probe only — no device — safe to call on every capability check.
+    #[wasm_bindgen(unchecked_return_type = "Promise<BfiSupport>")]
+    pub fn support() -> Promise {
+        future_to_promise(async { Ok(support::probe().await.to_js()) })
+    }
+
+    /// Load a GGUF streamed by the host (the host owns download + cache).
+    /// Weights stay packed on the GPU, one buffer per tensor.
+    #[wasm_bindgen(unchecked_return_type = "Promise<BfiModelInfo>")]
+    pub fn load(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "ReadableStream<Uint8Array>")] chunks: Object,
+        #[wasm_bindgen(js_name = totalBytes)] total_bytes: f64,
+        #[wasm_bindgen(js_name = onProgress, unchecked_param_type = "(loaded: number, total: number) => void")]
+        on_progress: Option<Function>,
+    ) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let (gpu, adapter) = {
+                let mut s = state.borrow_mut();
+                if s.busy {
+                    return Err(error(Kind::Busy, "another load or chat is running"));
+                }
+                s.busy = true;
+                s.unload_requested = false;
+                if s.model.take().is_some() {
+                    s.gpu.release_unused();
+                }
+                (s.gpu.clone(), s.adapter.clone())
+            };
+            let result =
+                loader::load(&gpu, &adapter, &chunks, total_bytes, on_progress.as_ref()).await;
+            let mut s = state.borrow_mut();
+            s.busy = false;
+            match result {
+                Ok(loaded) if !s.unload_requested => {
+                    let info = loaded.info();
+                    s.model = Some(loaded);
+                    Ok(info)
+                }
+                Ok(_) => {
+                    s.unload_requested = false;
+                    s.gpu.release_unused();
+                    Err(error(Kind::Aborted, ""))
+                }
+                Err(e) => {
+                    s.gpu.release_unused();
+                    Err(e)
+                }
+            }
+        })
+    }
+
+    /// OpenAI `chat.completions` request JSON → OpenAI chunk JSON strings via
+    /// `onChunk` (when `stream: true`); resolves with the final completion JSON
+    /// (`usage`, `finish_reason`, `tool_calls`). Rejects with `aborted` on `signal`.
+    #[wasm_bindgen(unchecked_return_type = "Promise<string>")]
+    pub fn chat(
+        &self,
+        #[wasm_bindgen(js_name = requestJson)] request_json: String,
+        #[wasm_bindgen(js_name = onChunk, unchecked_param_type = "(chunkJson: string) => void")]
+        on_chunk: Function,
+        #[wasm_bindgen(unchecked_param_type = "AbortSignal")] signal: Option<Object>,
+    ) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let mut loaded = {
+                let mut s = state.borrow_mut();
+                if s.busy {
+                    return Err(error(Kind::Busy, "another load or chat is running"));
+                }
+                let Some(m) = s.model.take() else {
+                    return Err(error(Kind::NotLoaded, "call load() first"));
+                };
+                s.busy = true;
+                m
+            };
+            let flag = state.clone();
+            let result = crate::chat::chat(
+                &mut loaded,
+                &request_json,
+                &on_chunk,
+                signal.as_ref(),
+                move || flag.borrow().unload_requested,
+            )
+            .await;
+            let mut s = state.borrow_mut();
+            s.busy = false;
+            if s.unload_requested {
+                s.unload_requested = false;
+                drop(loaded);
+                s.gpu.release_unused();
+            } else {
+                s.model = Some(loaded);
+            }
+            result.map(JsValue::from)
+        })
+    }
+
+    /// Drop the model and its GPU buffers. During a `chat`, the chat rejects
+    /// with `aborted` and the model is dropped when it unwinds.
+    pub fn unload(&self) {
+        let mut s = self.state.borrow_mut();
+        if s.busy {
+            s.unload_requested = true;
+            return;
+        }
+        if s.model.take().is_some() {
+            s.gpu.release_unused();
+        }
+    }
+}

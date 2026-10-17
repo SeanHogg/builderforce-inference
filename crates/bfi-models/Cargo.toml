@@ -6,6 +6,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+# GPU-resident qwen3 (`Qwen3Resident`) on bfi-core's wgpu runtime — the browser
+# engine (bfi-web) on wasm32; natively it runs on wgpu for tests.
+webgpu = ["bfi-core/webgpu"]
+
 [dependencies]
 bfi-gguf = { path = "../bfi-gguf" }
 bfi-core = { path = "../bfi-core" }

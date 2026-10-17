@@ -1,0 +1,29 @@
+[package]
+name = "bfi-web"
+description = "bfi in the browser: 1-bit Bonsai (GGUF Q1_0) on WebGPU, exposed as the BfiEngine JS class"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Every dependency is wasm32-only. Natively this crate is empty, so building the
+# workspace never unifies bfi-core's `webgpu` feature into the native `bfi`
+# binary (cuda / rocm / metal / vulkan builds stay exactly as they were).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bfi-gguf = { path = "../bfi-gguf" }
+bfi-core = { path = "../bfi-core", features = ["webgpu"] }
+bfi-models = { path = "../bfi-models", features = ["webgpu"] }
+bfi-runtime = { path = "../bfi-runtime" }
+anyhow.workspace = true
+serde_json.workspace = true
+wasm-bindgen = "0.2.100"
+wasm-bindgen-futures = "0.4.50"
+js-sys = "0.3.77"
+console_error_panic_hook = "0.1.7"
+
+[package.metadata.wasm-pack.profile.release]
+# wasm-opt runs separately in CI if wanted; keep the build reproducible offline.
+wasm-opt = false

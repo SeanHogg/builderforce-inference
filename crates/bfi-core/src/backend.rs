@@ -16,6 +16,9 @@ pub struct RopeParams {
     pub n_rot: usize,
     /// rope_multi sections; None = classic RoPE
     pub sections: Option<[usize; 4]>,
+    /// `rope` pairs dim `i` with `i + n_rot/2` (llama.cpp NEOX, qwen2/qwen3)
+    /// instead of `i + 1` (GPT-J / llama). Ignored by `rope_multi`.
+    pub neox: bool,
 }
 
 #[derive(Debug)]

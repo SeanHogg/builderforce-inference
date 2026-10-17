@@ -25,7 +25,7 @@ use anyhow::Context;
 
 use crate::backend::{Backend, DeviceKind, GatedDeltaParams, RopeParams};
 use crate::cpu::CpuBackend;
-use crate::fused_gemv::{fused_gemv_pq2_0, fused_gemv_ptq1_0};
+use crate::fused_gemv::{fused_gemv_pq2_0, fused_gemv_ptq1_0, fused_gemv_q1_0};
 use crate::tensor::{Storage, Tensor};
 use crate::DType;
 
@@ -284,6 +284,10 @@ impl GpuBackend {
                 (CubeClient::Cuda(c), DType::PTQ1_0) => {
                     gpu_kernels::gemv_ptq1_or_cpu(c, bytes, x, n_out, n_in)?
                 }
+                #[cfg(feature = "cuda")]
+                (CubeClient::Cuda(c), DType::Q1_0) => {
+                    gpu_kernels::gemv_q1_or_cpu(c, bytes, x, n_out, n_in)?
+                }
                 #[cfg(feature = "rocm")]
                 (CubeClient::Hip(c), DType::PQ2_0) => {
                     gpu_kernels::gemv_pq2_or_cpu(c, bytes, x, n_out, n_in)?
@@ -291,6 +295,10 @@ impl GpuBackend {
                 #[cfg(feature = "rocm")]
                 (CubeClient::Hip(c), DType::PTQ1_0) => {
                     gpu_kernels::gemv_ptq1_or_cpu(c, bytes, x, n_out, n_in)?
+                }
+                #[cfg(feature = "rocm")]
+                (CubeClient::Hip(c), DType::Q1_0) => {
+                    gpu_kernels::gemv_q1_or_cpu(c, bytes, x, n_out, n_in)?
                 }
                 #[cfg(any(feature = "vulkan", feature = "metal"))]
                 (CubeClient::Wgpu(c), DType::PQ2_0) => {
@@ -300,9 +308,14 @@ impl GpuBackend {
                 (CubeClient::Wgpu(c), DType::PTQ1_0) => {
                     gpu_kernels::gemv_ptq1_or_cpu(c, bytes, x, n_out, n_in)?
                 }
+                #[cfg(any(feature = "vulkan", feature = "metal"))]
+                (CubeClient::Wgpu(c), DType::Q1_0) => {
+                    gpu_kernels::gemv_q1_or_cpu(c, bytes, x, n_out, n_in)?
+                }
                 _ => match dtype {
                     DType::PQ2_0 => fused_gemv_pq2_0(bytes, x, n_out, n_in)?,
                     DType::PTQ1_0 => fused_gemv_ptq1_0(bytes, x, n_out, n_in)?,
+                    DType::Q1_0 => fused_gemv_q1_0(bytes, x, n_out, n_in)?,
                     _ => unreachable!(),
                 },
             };
@@ -318,6 +331,7 @@ impl GpuBackend {
             match dtype {
                 DType::PQ2_0 => fused_gemv_pq2_0(bytes, x, n_out, n_in),
                 DType::PTQ1_0 => fused_gemv_ptq1_0(bytes, x, n_out, n_in),
+                DType::Q1_0 => fused_gemv_q1_0(bytes, x, n_out, n_in),
                 _ => anyhow::bail!("fused gemv: unsupported {dtype:?}"),
             }
         }
@@ -348,7 +362,7 @@ impl Backend for GpuBackend {
 
     fn matmul_q(&self, weights: &Tensor, x: &Tensor) -> anyhow::Result<Tensor> {
         let (n_tokens, n_out, n_in) = gemv_dims(weights, x)?;
-        let fused = matches!(weights.dtype, DType::PQ2_0 | DType::PTQ1_0) && n_tokens == 1;
+        let fused = matches!(weights.dtype, DType::PQ2_0 | DType::PTQ1_0 | DType::Q1_0) && n_tokens == 1;
         if fused {
             let x_f = x.as_f32().context("matmul_q x")?;
             let bytes = quant_bytes(weights)?;
@@ -438,9 +452,12 @@ mod tests {
     use bfi_gguf::quantize_row_pq2_0;
 
     fn first_gpu() -> Option<DeviceKind> {
-        DEVICE_PROBE_ORDER
-            .into_iter()
-            .find(|k| *k != DeviceKind::Cpu && probe(*k))
+        crate::gpu_or_skip(
+            DEVICE_PROBE_ORDER
+                .into_iter()
+                .find(|k| *k != DeviceKind::Cpu && probe(*k)),
+            "the GpuBackend tests",
+        )
     }
 
     fn synthetic_pq2(n_out: usize, n_in: usize) -> (Vec<u8>, Vec<f32>) {
@@ -509,5 +526,49 @@ mod tests {
         let y_gpu = gpu.matmul_q(&w, &xt).unwrap();
         let err = max_rel_err(y_gpu.as_f32().unwrap(), y_cpu.as_f32().unwrap());
         assert!(err <= 1e-3, "GPU vs CPU rel err {err}");
+    }
+
+    fn synthetic_q1(n_out: usize, n_in: usize) -> (Vec<u8>, Vec<f32>) {
+        let mut bytes = Vec::with_capacity(n_out * (n_in / 128) * 18);
+        for o in 0..n_out {
+            for b in 0..n_in / 128 {
+                let row: Vec<f32> = (0..128)
+                    .map(|j| (((o * 31 + b * 7 + j * 13) % 17) as f32 - 8.0) * 0.05)
+                    .collect();
+                let mut block = vec![0u8; 18];
+                bfi_gguf::quantize_row_q1_0(&row, &mut block);
+                bytes.extend_from_slice(&block);
+            }
+        }
+        let x: Vec<f32> = (0..n_in).map(|i| ((i % 11) as f32 - 5.0) * 0.02).collect();
+        (bytes, x)
+    }
+
+    #[test]
+    fn fused_q1_matches_cpu_backend() {
+        let cpu = CpuBackend;
+        let (bytes, x) = synthetic_q1(5, 256);
+        let w = cpu.upload_quant(&[5, 256], DType::Q1_0, &bytes).unwrap();
+        let xt = cpu.upload_f32(&[1, 256], &x).unwrap();
+        let y_cpu = cpu.matmul_q(&w, &xt).unwrap();
+        let y_fused = fused_gemv_q1_0(&bytes, &x, 5, 256).unwrap();
+        let err = max_rel_err(y_cpu.as_f32().unwrap(), &y_fused);
+        assert!(err <= 1e-3, "rel err {err}");
+    }
+
+    #[test]
+    fn gpu_q1_matches_cpu_when_device_present() {
+        let Some(kind) = first_gpu() else {
+            return;
+        };
+        let gpu = open_backend(kind).expect("probe said the device is present");
+        let cpu = CpuBackend;
+        let (bytes, x) = synthetic_q1(70, 384);
+        let w = cpu.upload_quant(&[70, 384], DType::Q1_0, &bytes).unwrap();
+        let xt = cpu.upload_f32(&[1, 384], &x).unwrap();
+        let y_cpu = cpu.matmul_q(&w, &xt).unwrap();
+        let y_gpu = gpu.matmul_q(&w, &xt).unwrap();
+        let err = max_rel_err(y_gpu.as_f32().unwrap(), y_cpu.as_f32().unwrap());
+        assert!(err <= 1e-3, "GPU vs CPU Q1_0 rel err {err}");
     }
 }

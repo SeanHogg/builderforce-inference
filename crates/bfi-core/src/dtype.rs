@@ -1,8 +1,10 @@
 use bfi_gguf::{
-    TYPE_BF16, TYPE_F16, TYPE_F32, TYPE_PQ2_0, TYPE_PTQ1_0, TYPE_Q4_0, TYPE_Q4_K, TYPE_Q5_K,
-    TYPE_Q6_K, TYPE_Q8_0,
+    TYPE_BF16, TYPE_F16, TYPE_F32, TYPE_PQ2_0, TYPE_PTQ1_0, TYPE_Q1_0, TYPE_Q4_0, TYPE_Q4_K,
+    TYPE_Q5_K, TYPE_Q6_K, TYPE_Q8_0,
 };
 
+// Variant names mirror GGML type names (Q4_0, PQ2_0, …).
+#[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DType {
     F32,
@@ -15,6 +17,8 @@ pub enum DType {
     Q6_K,
     PQ2_0,
     PTQ1_0,
+    /// PrismML 1-bit (Bonsai), GGML id 41.
+    Q1_0,
 }
 
 impl DType {
@@ -30,6 +34,7 @@ impl DType {
             TYPE_Q6_K => DType::Q6_K,
             TYPE_PQ2_0 => DType::PQ2_0,
             TYPE_PTQ1_0 => DType::PTQ1_0,
+            TYPE_Q1_0 => DType::Q1_0,
             _ => return None,
         })
     }
@@ -46,6 +51,7 @@ impl DType {
             DType::Q6_K => TYPE_Q6_K,
             DType::PQ2_0 => TYPE_PQ2_0,
             DType::PTQ1_0 => TYPE_PTQ1_0,
+            DType::Q1_0 => TYPE_Q1_0,
         }
     }
 }
