@@ -11,12 +11,17 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
 use crate::errors::{error, Kind};
-use crate::loader::{self, Loaded};
+use crate::loader::{self, LoadOptions, Loaded};
 use crate::support::{self, AdapterInfo};
 
 #[wasm_bindgen(typescript_custom_section)]
 const TS_TYPES: &'static str = r#"
-export interface BfiModelInfo { arch: string; contextTokens: number; vocab: number; params: number }
+export interface BfiModelInfo { arch: string; contextTokens: number; vocab: number; params: number; kvF16: boolean }
+export interface BfiLoadOptions { kvBudgetBytes?: number }
+export interface BfiContextShape {
+  layers: number; kvHeads: number; headDim: number; trainedContext: number;
+  kvBudgetBytes?: number; f16?: boolean; maxBufferBytes?: number;
+}
 export interface BfiSupport { supported: boolean; reason?: string; maxBufferBytes: number; f16: boolean }
 "#;
 
@@ -66,6 +71,17 @@ impl BfiEngine {
         future_to_promise(async { Ok(support::probe().await.to_js()) })
     }
 
+    /// Predict the context `load` will serve for a model shape, before
+    /// downloading it (pure; same function the engine uses). Defaults:
+    /// `kvBudgetBytes` 2 GiB, `f16` false, `maxBufferBytes` 128 MiB (WebGPU's
+    /// guaranteed binding). The engine may serve less if allocation fails.
+    #[wasm_bindgen(js_name = contextFor)]
+    pub fn context_for(
+        #[wasm_bindgen(unchecked_param_type = "BfiContextShape")] shape: Object,
+    ) -> f64 {
+        crate::plan::context_for_js(&shape) as f64
+    }
+
     /// Load a GGUF streamed by the host (the host owns download + cache).
     /// Weights stay packed on the GPU, one buffer per tensor.
     #[wasm_bindgen(unchecked_return_type = "Promise<BfiModelInfo>")]
@@ -75,7 +91,9 @@ impl BfiEngine {
         #[wasm_bindgen(js_name = totalBytes)] total_bytes: f64,
         #[wasm_bindgen(js_name = onProgress, unchecked_param_type = "(loaded: number, total: number) => void")]
         on_progress: Option<Function>,
+        #[wasm_bindgen(unchecked_param_type = "BfiLoadOptions")] options: Option<Object>,
     ) -> Promise {
+        let opts = LoadOptions::from_js(options.as_ref());
         let state = self.state.clone();
         future_to_promise(async move {
             let (gpu, adapter) = {
@@ -91,7 +109,7 @@ impl BfiEngine {
                 (s.gpu.clone(), s.adapter.clone())
             };
             let result =
-                loader::load(&gpu, &adapter, &chunks, total_bytes, on_progress.as_ref()).await;
+                loader::load(&gpu, &adapter, &chunks, total_bytes, on_progress.as_ref(), opts).await;
             let mut s = state.borrow_mut();
             s.busy = false;
             match result {

@@ -30,6 +30,30 @@ pub fn half_to_f32(h: u32) -> f32 {
     out
 }
 
+/// f32 → IEEE binary16 bits (round to nearest on the dropped mantissa bit,
+/// overflow saturates to the largest finite half, tiny values flush through
+/// subnormals to zero). Used to pack the f16 KV cache without `shader-f16`.
+#[cube]
+pub fn f32_to_half(x: f32) -> u32 {
+    let bits = u32::reinterpret(x);
+    let sign = (bits >> 16u32) & 32768u32;
+    let exp = (bits >> 23u32) & 255u32;
+    let mant = bits & 8_388_607u32;
+    let mut h = sign;
+    if exp >= 143u32 {
+        h = sign | 31743u32;
+    } else if exp >= 113u32 {
+        let mut v = (((exp - 112u32) << 10u32) | (mant >> 13u32)) + ((mant >> 12u32) & 1u32);
+        if v > 31743u32 {
+            v = 31743u32;
+        }
+        h = sign | v;
+    } else if exp >= 103u32 {
+        h = sign | ((mant | 8_388_608u32) >> (126u32 - exp));
+    }
+    h
+}
+
 /// Little-endian f16 starting at byte `off`.
 #[cube]
 pub fn half_at(w: &Array<u32>, off: u32) -> f32 {

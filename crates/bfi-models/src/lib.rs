@@ -9,6 +9,7 @@
 //! (1-bit Bonsai `Q1_0`), loaded tensor-by-tensor from a stream.
 
 mod arch;
+pub mod kv_plan;
 mod qwen3;
 #[cfg(feature = "webgpu")]
 mod qwen3_resident;
@@ -19,9 +20,8 @@ mod tutil;
 pub use arch::{architecture_for, load_model, ArchReg, Architecture, Model};
 pub use qwen3::{Qwen3Arch, ARCH_NAME as QWEN3_ARCH, QWEN3};
 #[cfg(feature = "webgpu")]
-pub use qwen3_resident::{
-    Qwen3Resident, Qwen3ResidentLoader, CONTEXT_EXCEEDED, CONTEXT_STEP, PREFILL_CHUNK,
-};
+pub use qwen3_resident::{Qwen3Resident, Qwen3ResidentLoader, CONTEXT_EXCEEDED, PREFILL_CHUNK};
+pub use kv_plan::{served_context, KvShape};
 pub use qwen35::{Qwen35Arch, ARCH_NAME as QWEN35_ARCH, QWEN35};
 pub use state::{Logits, SeqState, StateLayout};
 

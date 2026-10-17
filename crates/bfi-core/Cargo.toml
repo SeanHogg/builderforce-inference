@@ -24,7 +24,9 @@ vulkan = ["cube", "cubecl/vulkan"]
 # wgpu + WGSL. On wasm32 this is the browser's WebGPU; natively it is wgpu on
 # Vulkan/Metal/DX12 (how the resident kernels are tested without a browser).
 # Enables `bfi_core::resident` (GPU-resident tensors, async readback).
-webgpu = ["cube", "cubecl/webgpu"]
+# `wgpu` (same 29.x CubeCL uses) is only for KV allocation probes in an
+# out-of-memory error scope, which CubeCL does not expose.
+webgpu = ["cube", "cubecl/webgpu", "dep:wgpu"]
 
 [dependencies]
 bfi-gguf = { path = "../bfi-gguf" }
@@ -32,6 +34,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
 cubecl = { workspace = true, optional = true }
+wgpu = { version = "29", optional = true, default-features = false }
 
 # Threads are native-only; `src/par.rs` runs the same kernels sequentially on wasm32.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

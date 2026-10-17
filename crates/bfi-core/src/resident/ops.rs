@@ -6,7 +6,7 @@ use cubecl::wgpu::WgpuRuntime;
 
 use bfi_gguf::{TYPE_F16, TYPE_F32, TYPE_Q1_0, TYPE_Q8_0};
 
-use super::{DeviceTensor, Gpu, Weight};
+use super::{DeviceTensor, Gpu, KvBuffer, Weight};
 use crate::kernels::{elementwise_cubes, gemm, gemm_cubes, lanes, ops, rows};
 
 type R = WgpuRuntime;
@@ -139,15 +139,37 @@ impl Gpu {
         }
     }
 
+    /// Append `n` f32 elements of `src` to `kv` at logical element `dst_off`
+    /// (f16 caches pack pairs; `dst_off` and `n` must then be even).
+    pub fn write_kv(&self, src: &DeviceTensor, kv: &KvBuffer, dst_off: usize, n: usize) {
+        if !kv.f16 {
+            self.copy(src, 0, &kv.words, dst_off, n);
+            return;
+        }
+        debug_assert!(dst_off % 2 == 0 && n % 2 == 0, "f16 KV rows must be even");
+        let n_words = (n / 2) as u32;
+        unsafe {
+            ops::pack_f16::launch_unchecked::<R>(
+                &self.client,
+                elementwise_cubes(n_words),
+                lanes(),
+                arr(src),
+                arr(&kv.words),
+                (dst_off / 2) as u32,
+                n_words,
+            );
+        }
+    }
+
     /// Causal GQA attention of `q` (`[n_tokens, hq, d]`, positions
-    /// `n_past..n_past + n_tokens`) over a KV cache (`[ctx, hkv, d]`) that already
-    /// holds rows `0..n_past + n_tokens`. Returns `[n_tokens, hq, d]`.
+    /// `n_past..n_past + n_tokens`) over a KV cache (`[ctx, hkv, d]`, f32 or f16)
+    /// that already holds rows `0..n_past + n_tokens`. Returns `[n_tokens, hq, d]`.
     #[allow(clippy::too_many_arguments)]
     pub fn attention(
         &self,
         q: &DeviceTensor,
-        kc: &DeviceTensor,
-        vc: &DeviceTensor,
+        k: &KvBuffer,
+        v: &KvBuffer,
         n_tokens: usize,
         n_past: usize,
         hq: usize,
@@ -158,21 +180,33 @@ impl Gpu {
         let s_len = n_past + n_tokens;
         let scores = self.empty_f32(rows * s_len);
         let scale = 1.0 / (d as f32).sqrt();
+        let score_cubes = CubeCount::Static((s_len as u32).div_ceil(64).max(1), rows as u32, 1);
+        macro_rules! scores {
+            ($k:path) => {
+                unsafe {
+                    $k(
+                        &self.client,
+                        score_cubes,
+                        lanes(),
+                        arr(q),
+                        arr(&k.words),
+                        arr(&scores),
+                        hq as u32,
+                        hkv as u32,
+                        d as u32,
+                        s_len as u32,
+                        n_past as u32,
+                        scale,
+                    )
+                }
+            };
+        }
+        if k.f16 {
+            scores!(ops::attn_scores_f16::launch_unchecked::<R>);
+        } else {
+            scores!(ops::attn_scores::launch_unchecked::<R>);
+        }
         unsafe {
-            ops::attn_scores::launch_unchecked::<R>(
-                &self.client,
-                CubeCount::Static((s_len as u32).div_ceil(64).max(1), rows as u32, 1),
-                lanes(),
-                arr(q),
-                arr(kc),
-                arr(&scores),
-                hq as u32,
-                hkv as u32,
-                d as u32,
-                s_len as u32,
-                n_past as u32,
-                scale,
-            );
             ops::softmax_rows::launch_unchecked::<R>(
                 &self.client,
                 CubeCount::Static(rows as u32, 1, 1),
@@ -183,21 +217,30 @@ impl Gpu {
         }
         let total = rows * d;
         let out = self.empty_f32(total);
-        unsafe {
-            ops::attn_values::launch_unchecked::<R>(
-                &self.client,
-                elementwise_cubes(total as u32),
-                lanes(),
-                arr(&scores),
-                arr(vc),
-                arr(&out),
-                hq as u32,
-                hkv as u32,
-                d as u32,
-                s_len as u32,
-                n_past as u32,
-                total as u32,
-            );
+        macro_rules! values {
+            ($k:path) => {
+                unsafe {
+                    $k(
+                        &self.client,
+                        elementwise_cubes(total as u32),
+                        lanes(),
+                        arr(&scores),
+                        arr(&v.words),
+                        arr(&out),
+                        hq as u32,
+                        hkv as u32,
+                        d as u32,
+                        s_len as u32,
+                        n_past as u32,
+                        total as u32,
+                    )
+                }
+            };
+        }
+        if v.f16 {
+            values!(ops::attn_values_f16::launch_unchecked::<R>);
+        } else {
+            values!(ops::attn_values::launch_unchecked::<R>);
         }
         out
     }

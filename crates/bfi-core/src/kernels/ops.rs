@@ -6,6 +6,8 @@
 
 use cubecl::prelude::*;
 
+use super::bytes::{f32_to_half, weight_f16};
+
 // Masked scores use -3.0e38 instead of -inf, written `f32::new(-3.0e38)`: a
 // mutable local initialised from a literal *expression* stays a host f32 in
 // CubeCL 0.10 and cannot later take a runtime value. Instead of -inf: `exp(-3e38 - max)` underflows to
@@ -257,5 +259,78 @@ pub fn copy_f32(src: &Array<f32>, dst: &mut Array<f32>, src_off: u32, dst_off: u
     let gid = CUBE_POS_X * 64u32 + UNIT_POS;
     if gid < n {
         dst[usize::cast_from(dst_off + gid)] = src[usize::cast_from(src_off + gid)];
+    }
+}
+
+/// `dst[dst_word_off + i] = half(src[2i]) | half(src[2i + 1]) << 16` — appends
+/// f32 K/V rows to an f16 KV cache (two halves per `u32` word).
+#[cube(launch_unchecked)]
+pub fn pack_f16(src: &Array<f32>, dst: &mut Array<u32>, dst_word_off: u32, n_words: u32) {
+    let gid = CUBE_POS_X * 64u32 + UNIT_POS;
+    if gid < n_words {
+        let a = src[usize::cast_from(gid * 2u32)];
+        let b = src[usize::cast_from(gid * 2u32 + 1u32)];
+        dst[usize::cast_from(dst_word_off + gid)] = f32_to_half(a) | (f32_to_half(b) << 16u32);
+    }
+}
+
+/// [`attn_scores`] over an f16 KV cache.
+#[cube(launch_unchecked)]
+pub fn attn_scores_f16(
+    q: &Array<f32>,
+    kc: &Array<u32>,
+    sc: &mut Array<f32>,
+    hq: u32,
+    hkv: u32,
+    d: u32,
+    s_len: u32,
+    n_past: u32,
+    scale: f32,
+) {
+    let s = CUBE_POS_X * 64u32 + UNIT_POS;
+    let r = CUBE_POS_Y;
+    if s < s_len {
+        let t = r / hq;
+        let kvh = (r % hq) / (hq / hkv);
+        let mut v = f32::new(-3.0e38);
+        if s <= n_past + t {
+            let qb = r * d;
+            let kb = (s * hkv + kvh) * d;
+            let mut dot = 0.0f32;
+            for i in 0..d {
+                dot += q[usize::cast_from(qb + i)] * weight_f16(kc, kb + i);
+            }
+            v = dot * scale;
+        }
+        sc[usize::cast_from(r * s_len + s)] = v;
+    }
+}
+
+/// [`attn_values`] over an f16 KV cache.
+#[cube(launch_unchecked)]
+pub fn attn_values_f16(
+    sc: &Array<f32>,
+    vc: &Array<u32>,
+    out: &mut Array<f32>,
+    hq: u32,
+    hkv: u32,
+    d: u32,
+    s_len: u32,
+    n_past: u32,
+    total: u32,
+) {
+    let gid = CUBE_POS_X * 64u32 + UNIT_POS;
+    if gid < total {
+        let i = gid % d;
+        let r = gid / d;
+        let t = r / hq;
+        let kvh = (r % hq) / (hq / hkv);
+        let n_valid = n_past + t + 1u32;
+        let pb = r * s_len;
+        let mut acc = 0.0f32;
+        for s in 0..n_valid {
+            acc += sc[usize::cast_from(pb + s)] * weight_f16(vc, (s * hkv + kvh) * d + i);
+        }
+        out[usize::cast_from(gid)] = acc;
     }
 }

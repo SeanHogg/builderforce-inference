@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use bfi_core::resident::Gpu;
 use bfi_gguf::TensorStream;
+use bfi_models::kv_plan::{kv_buffer_bytes, retry_contexts, served_context, DEFAULT_KV_BUDGET_BYTES};
 use bfi_models::{Qwen3Resident, Qwen3ResidentLoader};
 use bfi_runtime::Tokenizer;
 use js_sys::{Function, Object, Uint8Array};
@@ -20,10 +21,32 @@ use crate::errors::{classify, error, gguf, Kind};
 use crate::js;
 use crate::support::AdapterInfo;
 
-/// f32 KV-cache budget. With 1-bit weights the cache, not the model, is what
-/// fills VRAM: Bonsai 8B (36 layers, 8 KV heads × 128) costs 288 KiB per token,
-/// so 1 GiB ≈ 3.5K tokens; 1.7B (28 layers) ≈ 4.5K.
-pub const KV_BUDGET_BYTES: u64 = 1 << 30;
+/// `load` options (`{ kvBudgetBytes?: number }`).
+#[derive(Debug, Clone, Copy)]
+pub struct LoadOptions {
+    /// Total KV-cache budget. With 1-bit weights the cache, not the model, is
+    /// what fills VRAM. Default [`DEFAULT_KV_BUDGET_BYTES`] (2 GiB).
+    pub kv_budget_bytes: u64,
+}
+
+impl LoadOptions {
+    pub fn from_js(opts: Option<&Object>) -> Self {
+        let kv_budget_bytes = opts
+            .map(|o| js::get(o, "kvBudgetBytes"))
+            .and_then(|v| v.as_f64())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .map(|v| v as u64)
+            .unwrap_or(DEFAULT_KV_BUDGET_BYTES);
+        Self { kv_budget_bytes }
+    }
+}
+
+/// The largest single storage buffer the adapter allows.
+pub fn max_buffer_bytes(adapter: &AdapterInfo) -> u64 {
+    let binding = adapter.max_binding_bytes;
+    let buffer = if adapter.max_buffer_bytes > 0.0 { adapter.max_buffer_bytes } else { binding };
+    binding.min(buffer) as u64
+}
 
 /// A loaded model plus everything `chat` needs between turns.
 pub struct Loaded {
@@ -51,11 +74,13 @@ impl Loaded {
         p
     }
 
-    /// `{ arch, contextTokens, vocab, params }`.
+    /// `{ arch, contextTokens, vocab, params, kvF16 }`; `contextTokens` is what
+    /// was actually allocated.
     pub fn info(&self) -> JsValue {
         js::object(&[
             ("arch", JsValue::from_str(self.model.architecture())),
             ("contextTokens", JsValue::from_f64(self.model.n_ctx() as f64)),
+            ("kvF16", JsValue::from_bool(self.model.kv_f16())),
             ("vocab", JsValue::from_f64(self.model.n_vocab() as f64)),
             ("params", JsValue::from_f64(self.model.params() as f64)),
         ])
@@ -74,6 +99,7 @@ pub async fn load(
     chunks: &Object,
     total_bytes: f64,
     on_progress: Option<&Function>,
+    opts: LoadOptions,
 ) -> Result<Loaded, JsValue> {
     let reader = js::call(chunks, "getReader", &[])
         .map_err(|e| error(Kind::LoadFailed, format!("chunks is not a ReadableStream: {e:?}")))?;
@@ -122,8 +148,32 @@ pub async fn load(
         tokenizer,
         template,
     } = pending.ok_or_else(|| error(Kind::LoadFailed, "empty GGUF stream"))?;
-    let n_ctx = loader.context_for_budget(KV_BUDGET_BYTES, adapter.max_binding_bytes as u64);
-    let model = loader.finish(n_ctx).map_err(|e| classify(Kind::LoadFailed, &e))?;
+    // f16 KV when the adapter offers shader-f16 (half the bytes → twice the
+    // context); f32 otherwise. Start at the planned context and halve on
+    // allocation failure down to the floor, never above the trained context.
+    let shape = loader.kv_shape();
+    let kv_f16 = adapter.f16;
+    let max_buffer = max_buffer_bytes(adapter);
+    let planned = served_context(&shape, kv_f16, opts.kv_budget_bytes, max_buffer);
+    let mut n_ctx = None;
+    for ctx in retry_contexts(planned, &shape) {
+        if gpu.kv_fits(kv_buffer_bytes(&shape, kv_f16, ctx), 2 * shape.n_layer).await {
+            n_ctx = Some(ctx);
+            break;
+        }
+    }
+    let n_ctx = n_ctx.ok_or_else(|| {
+        error(
+            Kind::LoadFailed,
+            format!(
+                "the KV cache does not fit: planned {planned} tokens, the floor failed to allocate (kvBudgetBytes {})",
+                opts.kv_budget_bytes
+            ),
+        )
+    })?;
+    let model = loader
+        .finish(n_ctx, kv_f16, adapter.max_binding_bytes as u64)
+        .map_err(|e| classify(Kind::LoadFailed, &e))?;
     Ok(Loaded {
         model,
         tokenizer,

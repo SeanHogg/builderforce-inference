@@ -169,7 +169,16 @@ fn rms_norm_and_rope_neox_match_cpu() {
 }
 
 #[test]
-fn attention_with_cache_matches_cpu() {
+fn attention_with_f32_cache_matches_cpu() {
+    attention_with_cache(false, 1e-3);
+}
+
+#[test]
+fn attention_with_f16_cache_matches_cpu() {
+    attention_with_cache(true, 5e-3);
+}
+
+fn attention_with_cache(f16: bool, tol: f32) {
     let Some(g) = gpu() else { return };
     let cpu = CpuBackend;
     let (hq, hkv, d) = (4usize, 2usize, 64usize);
@@ -186,16 +195,17 @@ fn attention_with_cache_matches_cpu() {
             true,
         )
         .unwrap();
-    let mut kc = k.clone();
-    kc.resize(ctx * hkv * d, f32::NAN); // rows past the causal limit must never be read
-    let mut vc = v.clone();
-    vc.resize(ctx * hkv * d, f32::NAN);
+    // Rows past `filled` stay uninitialised: the kernels must never read them.
+    let kc = g.empty_kv(ctx * hkv * d, f16);
+    let vc = g.empty_kv(ctx * hkv * d, f16);
+    g.write_kv(&g.upload_f32(&k), &kc, 0, filled * hkv * d);
+    g.write_kv(&g.upload_f32(&v), &vc, 0, filled * hkv * d);
     let got = read(
         &g,
         &g.attention(
             &g.upload_f32(&q),
-            &g.upload_f32(&kc),
-            &g.upload_f32(&vc),
+            &kc,
+            &vc,
             n_tok,
             n_past,
             hq,
@@ -204,7 +214,23 @@ fn attention_with_cache_matches_cpu() {
         ),
     );
     assert!(got.iter().all(|v| v.is_finite()));
-    assert!(max_rel_err(&got, want.as_f32().unwrap()) <= 1e-3);
+    let err = max_rel_err(&got, want.as_f32().unwrap());
+    assert!(err <= tol, "f16={f16} rel err {err}");
+}
+
+#[test]
+fn f16_kv_append_at_an_offset_roundtrips() {
+    let Some(g) = gpu() else { return };
+    let src = pattern(8, 3);
+    let kv = g.empty_kv(16, true);
+    g.write_kv(&g.upload_f32(&src), &kv, 4, 8);
+    let words = read(&g, &kv.words);
+    for i in 0..8 {
+        let w = words[(4 + i) / 2].to_bits();
+        let h = ((w >> (16 * ((4 + i) % 2))) & 0xFFFF) as u16;
+        let got = bfi_gguf::f16_to_f32(h);
+        assert!((got - src[i]).abs() <= 1e-3 * src[i].abs().max(1.0), "{i}: {got} vs {}", src[i]);
+    }
 }
 
 #[test]

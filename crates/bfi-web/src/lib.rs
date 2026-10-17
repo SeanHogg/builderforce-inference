@@ -5,6 +5,7 @@
 //! - [`support`]: adapter probe, no device.
 //! - [`loader`]: `ReadableStream` → `TensorStream` → packed per-tensor GPU buffers.
 //! - [`chat`]: OpenAI `chat.completions` → `bfi_runtime::openai` turn → chunk JSON.
+//! - [`plan`]: `BfiEngine.contextFor`, the served-context prediction.
 //! - [`errors`]: stable `Error.message` prefixes.
 //!
 //! Natively this crate is empty (all dependencies are wasm32-only); build it with
@@ -20,6 +21,8 @@ mod errors;
 mod js;
 #[cfg(target_arch = "wasm32")]
 mod loader;
+#[cfg(target_arch = "wasm32")]
+mod plan;
 #[cfg(target_arch = "wasm32")]
 mod support;
 

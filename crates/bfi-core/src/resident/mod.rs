@@ -69,6 +69,16 @@ pub struct DeviceTensor {
     pub len: usize,
 }
 
+/// One layer's K or V cache, `[ctx, n_head_kv, head_dim]`, stored as f32 or as
+/// packed f16 (two halves per `u32` word — half the memory, so twice the context).
+#[derive(Clone)]
+pub struct KvBuffer {
+    pub(crate) words: DeviceTensor,
+    /// Logical element count (`ctx · n_head_kv · head_dim`).
+    pub elems: usize,
+    pub f16: bool,
+}
+
 /// A packed weight matrix `[n_out, n_in]` (GGUF dims `[n_in, n_out]`).
 #[derive(Clone)]
 pub struct Weight {
@@ -89,11 +99,67 @@ impl Weight {
 #[derive(Clone)]
 pub struct Gpu {
     client: ResidentClient,
+    /// The raw wgpu device, when we created it (browser path): lets
+    /// [`Gpu::kv_fits`] probe allocations inside an out-of-memory error scope,
+    /// which CubeCL does not expose.
+    probe_device: Option<wgpu::Device>,
 }
 
 impl Gpu {
     pub fn from_client(client: ResidentClient) -> Self {
-        Self { client }
+        Self {
+            client,
+            probe_device: None,
+        }
+    }
+
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    pub(crate) fn with_probe_device(client: ResidentClient, device: wgpu::Device) -> Self {
+        Self {
+            client,
+            probe_device: Some(device),
+        }
+    }
+
+    /// Uninitialised KV buffer of `elems` logical elements (`elems` even for f16).
+    pub fn empty_kv(&self, elems: usize, f16: bool) -> KvBuffer {
+        let words = if f16 { elems.div_ceil(2) } else { elems };
+        KvBuffer {
+            words: DeviceTensor {
+                handle: self.client.empty(words.max(1) * 4),
+                len: words,
+            },
+            elems,
+            f16,
+        }
+    }
+
+    /// Whether `count` storage buffers of `buffer_bytes` each can be allocated
+    /// right now. Allocates them inside WebGPU out-of-memory + validation error
+    /// scopes, awaits the scopes, then destroys them. Without a probe device
+    /// (native wgpu, tests) it trusts the planned size and returns `true`.
+    pub async fn kv_fits(&self, buffer_bytes: u64, count: usize) -> bool {
+        let Some(device) = &self.probe_device else {
+            return true;
+        };
+        let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let invalid = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let buffers: Vec<wgpu::Buffer> = (0..count)
+            .map(|_| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("bfi-kv-probe"),
+                    size: buffer_bytes.max(4).div_ceil(4) * 4,
+                    usage: wgpu::BufferUsages::STORAGE,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect();
+        let invalid_err = invalid.pop().await;
+        let oom_err = oom.pop().await;
+        for b in &buffers {
+            b.destroy();
+        }
+        invalid_err.is_none() && oom_err.is_none()
     }
 
     pub fn client(&self) -> &ResidentClient {

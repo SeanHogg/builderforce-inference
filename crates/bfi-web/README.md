@@ -37,9 +37,14 @@ if (!s.supported) throw new Error(s.reason);
 
 const engine = await BfiEngine.create();    // rejects "webgpu_unavailable: …"
 const res = await fetch(".../Bonsai-1.7B-Q1_0.gguf");
+// Predict the served context before downloading (same math as load):
+const ctx = BfiEngine.contextFor({ layers: 28, kvHeads: 8, headDim: 128,
+  trainedContext: 32768, f16: s.f16 });          // 18688 with f16, 9216 without
+
 const info = await engine.load(res.body!, Number(res.headers.get("content-length")),
-  (loaded, total) => console.log(loaded / total));
-// info = { arch: "qwen3", contextTokens, vocab, params }
+  (loaded, total) => console.log(loaded / total),
+  { kvBudgetBytes: 2 * 2 ** 30 });               // optional; 2 GiB default
+// info = { arch: "qwen3", contextTokens, vocab, params, kvF16 }
 
 const ac = new AbortController();
 const final = await engine.chat(JSON.stringify({
@@ -82,7 +87,10 @@ the conversation so far only prefills the new suffix.
 ### Memory
 
 Weights stay packed on the GPU, one buffer per tensor (Bonsai 8B ≈ 1.15 GB,
-1.7B ≈ 0.25 GB). The f32 KV cache gets a 1 GiB budget and is also bounded by
-the adapter's `maxStorageBufferBindingSize`; `contextTokens` reports what was
-allocated (Bonsai 8B ≈ 3.5K tokens, 1.7B ≈ 4.5K). The host streams the file;
+1.7B ≈ 0.25 GB). The KV cache is f16 when the adapter has `shader-f16`
+(else f32), budgeted at `kvBudgetBytes` total (default 2 GiB). If allocation
+fails, `load` halves the context down to 2048 tokens. `contextTokens` reports
+what was allocated: at the default budget with f16, Bonsai 8B / 4B ≈ 14 336
+tokens and 1.7B ≈ 18 688 (f32: 7 168 / 9 216). The formula is in
+`docs/PRD-bfi-web.md` §6. The host streams the file;
 bfi-web holds at most the header plus one tensor in wasm memory while loading.

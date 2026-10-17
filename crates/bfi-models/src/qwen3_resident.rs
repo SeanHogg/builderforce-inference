@@ -14,21 +14,21 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, ensure, Context, Result};
-use bfi_core::resident::{DeviceTensor, Gpu, Weight};
+use bfi_core::resident::{DeviceTensor, Gpu, KvBuffer, Weight};
 use bfi_gguf::{dequant_tensor, require_type, ModelHeader, StreamedTensor};
 
+use crate::kv_plan::KvShape;
 use crate::qwen3::{parse_config, Qwen3Config, ARCH_NAME};
 
-/// Tokens per enqueued forward chunk during prefill. Bounds the attention
-/// scratch (`chunk · n_head · (n_past + chunk)` f32) and activation buffers.
+/// Most tokens per enqueued forward chunk during prefill. Long contexts use
+/// smaller chunks so the attention scores (`chunk · n_head · n_ctx` f32) fit one
+/// storage binding; the score buffer never caps the context.
 pub const PREFILL_CHUNK: usize = 64;
 
 /// Error text prefix when a request would overrun the allocated KV cache.
 /// `bfi-web` maps it to the `context_exceeded:` JS error.
 pub const CONTEXT_EXCEEDED: &str = "context_exceeded";
 
-/// Allocated contexts are rounded down to a multiple of this.
-pub const CONTEXT_STEP: usize = 256;
 
 enum Slot {
     Matrix(Weight),
@@ -99,33 +99,20 @@ impl Qwen3ResidentLoader {
         self.cfg.n_ctx
     }
 
-    /// KV-cache bytes per token: `n_layer · 2 · n_head_kv · head_dim · 4`.
-    pub fn kv_bytes_per_token(&self) -> u64 {
-        (self.cfg.n_layer * 2 * self.cfg.n_head_kv * self.cfg.head_dim * 4) as u64
-    }
-
-    /// Largest context (multiple of [`CONTEXT_STEP`], ≤ trained) whose f32 KV
-    /// cache fits `kv_budget_bytes` in total and whose biggest single buffers —
-    /// one layer's K (or V), and a prefill chunk's attention scores — fit the
-    /// device's `max_binding_bytes` (WebGPU `maxStorageBufferBindingSize`).
-    pub fn context_for_budget(&self, kv_budget_bytes: u64, max_binding_bytes: u64) -> usize {
-        let c = &self.cfg;
-        let per_token = self.kv_bytes_per_token().max(1);
-        let per_layer_row = (c.n_head_kv * c.head_dim * 4).max(1) as u64;
-        let score_row = (PREFILL_CHUNK * c.n_head * 4).max(1) as u64;
-        let cap = (kv_budget_bytes / per_token)
-            .min(max_binding_bytes / per_layer_row)
-            .min(max_binding_bytes / score_row) as usize;
-        let cap = cap.min(c.n_ctx);
-        if cap >= CONTEXT_STEP {
-            cap / CONTEXT_STEP * CONTEXT_STEP
-        } else {
-            cap.max(1)
+    /// The KV-relevant shape, for [`crate::kv_plan::served_context`].
+    pub fn kv_shape(&self) -> KvShape {
+        KvShape {
+            n_layer: self.cfg.n_layer,
+            n_head_kv: self.cfg.n_head_kv,
+            head_dim: self.cfg.head_dim,
+            trained_ctx: self.cfg.n_ctx,
         }
     }
 
-    /// Assemble the model with a KV cache of `n_ctx` tokens.
-    pub fn finish(mut self, n_ctx: usize) -> Result<Qwen3Resident> {
+    /// Assemble the model with a KV cache of `n_ctx` tokens, stored as f16
+    /// when `kv_f16` (half the memory) else f32. `max_binding_bytes` is the
+    /// device's largest storage binding; it sizes the prefill chunk.
+    pub fn finish(mut self, n_ctx: usize, kv_f16: bool, max_binding_bytes: u64) -> Result<Qwen3Resident> {
         let tok_embd = self.matrix("token_embd.weight")?;
         let mut cfg = self.cfg;
         cfg.n_vocab = tok_embd.n_out as usize;
@@ -157,9 +144,13 @@ impl Qwen3ResidentLoader {
         }
 
         let n_ctx = n_ctx.min(self.cfg.n_ctx).max(1);
-        let kv_len = n_ctx * self.cfg.n_head_kv * self.cfg.head_dim;
-        let k = (0..self.cfg.n_layer).map(|_| self.gpu.empty_f32(kv_len)).collect();
-        let v = (0..self.cfg.n_layer).map(|_| self.gpu.empty_f32(kv_len)).collect();
+        let kv_row = self.cfg.n_head_kv * self.cfg.head_dim;
+        ensure!(!kv_f16 || kv_row % 2 == 0, "f16 KV needs an even n_head_kv·head_dim, got {kv_row}");
+        let kv_len = n_ctx * kv_row;
+        let k = (0..self.cfg.n_layer).map(|_| self.gpu.empty_kv(kv_len, kv_f16)).collect();
+        let v = (0..self.cfg.n_layer).map(|_| self.gpu.empty_kv(kv_len, kv_f16)).collect();
+        let score_row = (self.cfg.n_head * n_ctx * 4).max(1) as u64;
+        let prefill_chunk = ((max_binding_bytes / score_row) as usize).clamp(1, PREFILL_CHUNK);
         let half = self.cfg.n_rot.min(self.cfg.head_dim) / 2;
         let inv: Vec<f32> = (0..half)
             .map(|i| 1.0 / self.cfg.rope_freq_base.powf((2 * i) as f32 / (2 * half) as f32))
@@ -170,6 +161,8 @@ impl Qwen3ResidentLoader {
             gpu: self.gpu,
             cfg: self.cfg,
             n_ctx,
+            kv_f16,
+            prefill_chunk,
             params: self.params,
             inv_freq,
             tok_embd,
@@ -261,18 +254,24 @@ pub struct Qwen3Resident {
     gpu: Gpu,
     cfg: Qwen3Config,
     n_ctx: usize,
+    kv_f16: bool,
+    prefill_chunk: usize,
     params: u64,
     inv_freq: DeviceTensor,
     tok_embd: Weight,
     output: Weight,
     output_norm: DeviceTensor,
     layers: Vec<Layer>,
-    k: Vec<DeviceTensor>,
-    v: Vec<DeviceTensor>,
+    k: Vec<KvBuffer>,
+    v: Vec<KvBuffer>,
     n_past: usize,
 }
 
 impl Qwen3Resident {
+    /// KV cache is f16 (else f32).
+    pub fn kv_f16(&self) -> bool {
+        self.kv_f16
+    }
     pub fn gpu(&self) -> &Gpu {
         &self.gpu
     }
@@ -322,7 +321,7 @@ impl Qwen3Resident {
         if let Some(&bad) = tokens.iter().find(|&&t| t >= n_vocab) {
             return Err(anyhow!("token id {bad} >= n_vocab {n_vocab}"));
         }
-        let chunks: Vec<&[u32]> = tokens.chunks(PREFILL_CHUNK).collect();
+        let chunks: Vec<&[u32]> = tokens.chunks(self.prefill_chunk).collect();
         let last = chunks.len() - 1;
         let mut logits = None;
         for (ci, chunk) in chunks.into_iter().enumerate() {
@@ -351,8 +350,8 @@ impl Qwen3Resident {
             let k = g.rms_norm(&k, &l.k_norm, t * hkv, d, eps);
             g.rope_neox(&q, &pos, &self.inv_freq, t, hq, d);
             g.rope_neox(&k, &pos, &self.inv_freq, t, hkv, d);
-            g.copy(&k, 0, &self.k[i], n_past * kv_row, t * kv_row);
-            g.copy(&v, 0, &self.v[i], n_past * kv_row, t * kv_row);
+            g.write_kv(&k, &self.k[i], n_past * kv_row, t * kv_row);
+            g.write_kv(&v, &self.v[i], n_past * kv_row, t * kv_row);
             let a = g.attention(&q, &self.k[i], &self.v[i], t, n_past, hq, hkv, d);
             let o = g.matmul(&l.wo, &a, t);
             g.add_inplace(&x, &o);
@@ -470,14 +469,33 @@ mod tests {
         stream.push(&bytes).unwrap();
         stream.flush_header().unwrap();
         let loader = Qwen3ResidentLoader::new(gpu, stream.header().unwrap()).unwrap();
-        // toy: 2 layers, 1 kv head × 64 → 1 KiB KV per token; trained ctx 32.
-        assert_eq!(loader.kv_bytes_per_token(), 2 * 2 * 64 * 4);
-        assert_eq!(loader.context_for_budget(u64::MAX, u64::MAX), 32);
-        assert_eq!(loader.context_for_budget(10 * 1024, u64::MAX), 10);
+        // toy: 2 layers, 1 kv head × 64; trained ctx 32.
+        let shape = loader.kv_shape();
+        assert_eq!(shape, KvShape { n_layer: 2, n_head_kv: 1, head_dim: 64, trained_ctx: 32 });
+        assert_eq!(crate::kv_plan::kv_bytes_per_token(&shape, false), 2 * 2 * 64 * 4);
+        assert_eq!(crate::served_context(&shape, false, u64::MAX, u64::MAX), 32);
+        assert_eq!(crate::served_context(&shape, false, 10 * 1024, u64::MAX), 10);
+        assert_eq!(crate::served_context(&shape, true, 10 * 1024, u64::MAX), 20);
     }
 
     #[test]
-    fn resident_matches_cpu_qwen3_prompt_then_decode() {
+    fn resident_matches_cpu_qwen3_prompt_then_decode_f32_kv() {
+        resident_vs_cpu(false, 2e-3, u64::MAX);
+    }
+
+    #[test]
+    fn resident_matches_cpu_qwen3_prompt_then_decode_f16_kv() {
+        resident_vs_cpu(true, 1e-2, u64::MAX);
+    }
+
+    #[test]
+    fn small_binding_shrinks_prefill_chunk_not_results() {
+        // 2 heads · 32 ctx · 4 B = 256 B per score row → a 512 B binding forces
+        // 2-token prefill chunks; logits must not change.
+        resident_vs_cpu(false, 2e-3, 512);
+    }
+
+    fn resident_vs_cpu(kv_f16: bool, tol: f32, max_binding: u64) {
         let Some(gpu) = bfi_core::gpu_or_skip(open_native(), "the resident qwen3 tests") else { return };
         let bytes = bonsai_toy();
 
@@ -503,18 +521,19 @@ mod tests {
             loader.accept(t).unwrap();
         }
         s2.finish().unwrap();
-        let mut model = loader.finish(32).unwrap();
+        let mut model = loader.finish(32, kv_f16, max_binding).unwrap();
+        assert_eq!(model.kv_f16(), kv_f16);
         assert_eq!(model.n_vocab(), 16);
 
         let got = model.forward(&prompt).unwrap();
         let got = block_on(gpu.read_f32(&got)).unwrap();
         let err = max_rel_err(&got, want_prompt.as_slice());
-        assert!(err <= 2e-3, "prompt logits rel err {err}\n{got:?}\n{:?}", want_prompt.as_slice());
+        assert!(err <= tol, "prompt logits rel err {err}\n{got:?}\n{:?}", want_prompt.as_slice());
 
         let got = model.forward(&[7]).unwrap();
         let got = block_on(gpu.read_f32(&got)).unwrap();
         let err = max_rel_err(&got, want_step.as_slice());
-        assert!(err <= 2e-3, "decode logits rel err {err}");
+        assert!(err <= tol, "decode logits rel err {err}");
 
         let over = model.forward(&vec![1u32; 32]).err().unwrap().to_string();
         assert!(over.starts_with(CONTEXT_EXCEEDED), "{over}");

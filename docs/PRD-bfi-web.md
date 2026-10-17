@@ -55,7 +55,7 @@ kernels are tested against `CpuBackend` without a browser.
 |---|---|---|
 | `bfi-gguf` | `types/q1_0.rs`; `source.rs` (`ByteSource`: mmap native, owned on wasm32); `stream.rs` (`TensorStream` push parser) | `memmap2` is a non-wasm32 dependency. Peak memory while streaming = header + one tensor. |
 | `bfi-core` | `kernels/` (`#[cube]`, feature `cube`): `bytes` (in-shader byte / f16 unpack), `gemm` (Q1_0, Q8_0, F16, F32), `rows` (get_rows), `ops` (RMSNorm, NEOX RoPE, causal GQA attention, SwiGLU, add, copy); `resident/` (feature `webgpu`); `par.rs` (rayon native, sequential wasm32); `DType::Q1_0`; `RopeParams::neox` | The Q1_0 GEMM kernel is shared: native `GpuBackend::matmul_q` (cuda/rocm/vulkan/metal) launches it through `gpu_kernels::gemv_q1_or_cpu`. |
-| `bfi-models` | `qwen3_resident.rs` (feature `webgpu`): `Qwen3ResidentLoader` (streaming upload, shape checks, context sizing), `Qwen3Resident` (forward, prefix rewind) | Untied lm_head supported (falls back to `token_embd` when `output.weight` is absent). |
+| `bfi-models` | `kv_plan.rs` (pure served-context math, always compiled); `qwen3_resident.rs` (feature `webgpu`): `Qwen3ResidentLoader` (streaming upload, shape checks, `kv_shape`), `Qwen3Resident` (forward, prefix rewind, f16/f32 KV) | Untied lm_head supported (falls back to `token_embd` when `output.weight` is absent). |
 | `bfi-runtime` | `openai.rs` (request → `ChatPlan`; `ChatTurn` sampling / stop strings / tool calls / chunk JSON); `jinja_compat.rs`; `byte_level.rs`; ChatML fallback in `chat.rs` | `store` (filesystem) and `dirs` are native-only. `bfi-server` now uses the shared `content_text`, `apply_tools`, `prepend_tools_block`, `render_prompt`, `completion_value`, `chunk_value`. |
 | `bfi-web` (new) | `engine.rs` (the class), `support.rs`, `loader.rs`, `chat.rs`, `errors.rs`, `js.rs` | All deps are wasm32-only, so the native workspace never unifies `bfi-core/webgpu` into `bfi`. |
 
@@ -97,11 +97,46 @@ same probe and never creates a device.
 - Weights: Bonsai 8B ≈ 1.15 GB, 1.7B ≈ 0.25 GB of packed buffers. The largest
   single buffer is the 8B embedding table (151 936 × 4 096 Q1_0 ≈ 88 MB), under
   WebGPU's default 128 MiB `maxStorageBufferBindingSize`.
-- KV cache is f32: `n_layer · 2 · n_kv · head_dim · 4` bytes per token
-  (8B: 288 KiB). `KV_BUDGET_BYTES = 1 GiB`, further bounded by the adapter's
-  binding limit for one layer's K/V buffer and for one prefill chunk's scores;
-  rounded down to a multiple of 256. 8B → 3 584 tokens, 1.7B → 4 608.
-  `BfiModelInfo.contextTokens` reports the allocated value.
+- **KV cache precision.** f16 (two halves per `u32` word, packed in-shader so
+  it needs no WGSL `f16`) when the adapter offers `shader-f16`; f32 otherwise.
+  Attention reads either layout (`attn_scores_f16` / `attn_values_f16`).
+- **Served context** (`bfi_models::kv_plan::served_context`, also exposed as
+  `BfiEngine.contextFor` so the host can predict it before downloading):
+
+  ```text
+  bytes_per_elem = f16 ? 2 : 4
+  per_token      = layers · 2 · kvHeads · headDim · bytes_per_elem
+  per_buffer_row = kvHeads · headDim · bytes_per_elem          (one layer's K or V)
+  ctx = min(trainedContext,
+            floor(kvBudgetBytes  / per_token),
+            floor(maxBufferBytes / per_buffer_row))
+  ctx = ctx ≥ 256 ? floor(ctx / 256) · 256 : ctx
+  ```
+
+  `kvBudgetBytes` caps *total* KV memory (default 2 GiB, `load(…, { kvBudgetBytes })`);
+  every layer's K and V are separate buffers, so the per-binding limit only
+  applies to one of them. `maxBufferBytes` = `min(maxStorageBufferBindingSize,
+  maxBufferSize)` of the adapter (`contextFor` defaults to WebGPU's guaranteed
+  128 MiB). The attention-score scratch does not cap the context: long contexts
+  use smaller prefill chunks (`max_binding / (n_head · ctx · 4)`, at most 64).
+- **Allocation retry.** Before allocating, `load` probes `2 · layers` buffers of
+  the planned size inside WebGPU out-of-memory + validation error scopes (CubeCL
+  does not expose scopes, so bfi-core keeps the raw `wgpu::Device` from
+  `init_setup_async`). On failure it halves the context (rounded to 256) down to
+  `min(2048, trainedContext)`; if the floor fails, `load` rejects
+  `load_failed:`. `BfiModelInfo.contextTokens` is what was allocated, and
+  `kvF16` says which layout.
+- Predicted served context at the default 2 GiB budget (128 MiB binding, no
+  OOM). Shapes from the HF `config.json` of `prism-ml/Bonsai-{8B,4B,1.7B}-unpacked`;
+  asserted in `kv_plan` tests:
+
+  | Model | layers · kvHeads · headDim | trained | KV / token f16 | f16 ctx | f32 ctx |
+  |---|---|---|---|---|---|
+  | Bonsai 8B | 36 · 8 · 128 | 65 536 | 144 KiB | **14 336** | 7 168 |
+  | Bonsai 4B | 36 · 8 · 128 | 32 768 | 144 KiB | **14 336** | 7 168 |
+  | Bonsai 1.7B | 28 · 8 · 128 | 32 768 | 112 KiB | **18 688** | 9 216 |
+
+  A 4 GiB budget roughly doubles these (8B f16 → 28 928), capped by the trained context.
 - Loading never holds the file: chunks → `TensorStream` → upload → drop.
 
 ## 7. Tokenizer correctness fixes found on the way (native too)
@@ -150,6 +185,8 @@ tok/s on an integrated and a discrete GPU.
 
 - Single sequence; prefix reuse across turns, no batching.
 - Resident weight types: `Q1_0`, `Q8_0`, `F16`, `F32` (others → `unsupported_type:`).
-- f32 KV cache (an f16 cache behind `shader-f16` would double the context).
+- Without `shader-f16` the KV cache is f32 (half the f16 context). The f16
+  path packs with integer ops, so it could run everywhere; it is gated on the
+  adapter feature to stay conservative.
 - Upload copies a tensor twice on the host (`create_from_slice` copies), so wasm
   memory peaks near 3× the largest tensor (~260 MB for 8B) during load.

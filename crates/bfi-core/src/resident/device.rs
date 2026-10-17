@@ -20,12 +20,13 @@ use super::Gpu;
 #[cfg(target_family = "wasm")]
 pub async fn open_webgpu() -> Gpu {
     let device = WgpuDevice::DefaultDevice;
-    cubecl::wgpu::init_setup_async::<cubecl::wgpu::WebGpu>(
+    let setup = cubecl::wgpu::init_setup_async::<cubecl::wgpu::WebGpu>(
         &device,
         cubecl::wgpu::RuntimeOptions::default(),
     )
     .await;
-    Gpu::from_client(WgpuRuntime::client(&device))
+    // Keep the raw device for KV allocation probes (error scopes).
+    Gpu::with_probe_device(WgpuRuntime::client(&device), setup.device)
 }
 
 /// Native wgpu (Vulkan / Metal / DX12). `None` when no adapter enumerates.
