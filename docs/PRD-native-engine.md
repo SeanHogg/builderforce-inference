@@ -2,14 +2,18 @@
 
 | | |
 |---|---|
-| Status | In progress — crate scaffolding exists (tokenizer, sampler, prefix cache, grammar, embeddings, sequential `generate_batch`); Synapse still drives Ollama |
+| Status | Product cut-over shipped (M2–M6). Remaining: M1 70% GPU tok/s unmeasured; M3 live Bonsai 27B greedy vs fork not run; M7 signed GitHub Release binaries |
 | Owner | Synapse / builderforce-inference |
 | Written | 2026-10-11 |
-| Tracks | Builderforce.ai `ROADMAP.md` → "Local LLM execution" row |
+| Tracks | Builderforce.ai `ROADMAP.md` → "Local LLM execution" row (🔄 Partial until the three remaining items below) |
+
+**Delivery (2026-10-14).** The product behaviour this PRD asked for is in the tree. Synapse supervises `bfi serve`; `bf-local/src/ollama.rs` and `SYNAPSE_USE_OLLAMA` are gone (`crates/bfi/src/ollama.rs` is the import-ollama CLI only). CubeCL GPU backends compile (`open_backend` for cuda/rocm/metal/vulkan); `mix_decode` + `tools`/`tool_choice` round-trip; VSIX discovers Synapse via `~/.builderforce/desktop.json`; blog `synapse-runs-models-itself.md` is live. **Not claimed:** 70% GPU tok/s vs llama-bench (ticket #3762 / #4465 — needs Metal + NVIDIA hardware); live Bonsai 27B greedy vs the PrismML fork (ticket #3764 — no 27B weights in CI); signed GitHub Release binaries (tickets #3782 / #4481 — owner signing secrets). Do not move the ROADMAP row to DONE until those three land.
 
 ## 1. Why
 
-Synapse runs local models today by driving a separately installed Ollama (`crates/bf-local/src/ollama.rs`). That has three costs:
+*(Historical — written 2026-10-11. Cut-over shipped; see Delivery above. The three costs below are why we built `bfi`.)*
+
+Synapse ran local models by driving a separately installed Ollama (`crates/bf-local/src/ollama.rs`). That had three costs:
 
 1. **An install step outside our control.** A person must install Ollama before Synapse's local models work. If it is missing, the Models view shows a download link to someone else's product.
 2. **The formats we most want don't run on it.** PrismML's Ternary Bonsai 2 27B ships as `PQ2_0` / `PTQ1_0` GGUF, and stock llama.cpp (which Ollama embeds) rejects both types. Only PrismML's llama.cpp fork runs them.
