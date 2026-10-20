@@ -9,7 +9,7 @@ use wasm_bindgen::JsValue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// No WebGPU adapter / device.
+    /// No WebGPU adapter / device, or the device was lost (create a new engine).
     WebgpuUnavailable,
     /// A tensor type the WebGPU engine cannot run (names the tensor).
     UnsupportedType,
@@ -68,8 +68,10 @@ fn strip_prefix<'a>(kind: Kind, msg: &'a str) -> &'a str {
 /// Classify an engine error, falling back to `default`.
 pub fn classify(default: Kind, e: &anyhow::Error) -> JsValue {
     for cause in e.chain() {
-        if let Some(ResidentError::UnsupportedType { .. }) = cause.downcast_ref::<ResidentError>() {
-            return error(Kind::UnsupportedType, cause);
+        if let Some(r) = cause.downcast_ref::<ResidentError>() {
+            if matches!(r, ResidentError::UnsupportedType { .. } | ResidentError::DeviceLost(_)) {
+                return gpu_error(default, r);
+            }
         }
         if let Some(GgufError::UnknownGgmlType { .. }) = cause.downcast_ref::<GgufError>() {
             return error(Kind::UnsupportedType, cause);
@@ -80,6 +82,17 @@ pub fn classify(default: Kind, e: &anyhow::Error) -> JsValue {
         return error(Kind::ContextExceeded, msg);
     }
     error(default, msg)
+}
+
+/// A resident-GPU error: a lost device is `webgpu_unavailable:`, an
+/// unsupported tensor type `unsupported_type:`, anything else `default`.
+pub fn gpu_error(default: Kind, e: &ResidentError) -> JsValue {
+    let kind = match e {
+        ResidentError::DeviceLost(_) => Kind::WebgpuUnavailable,
+        ResidentError::UnsupportedType { .. } => Kind::UnsupportedType,
+        _ => default,
+    };
+    error(kind, e)
 }
 
 pub fn gguf(e: GgufError) -> JsValue {

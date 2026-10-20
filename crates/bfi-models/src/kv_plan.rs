@@ -15,7 +15,8 @@
 //!
 //! The budget caps *total* KV memory (each layer's K and V are separate
 //! buffers); `max_buffer_bytes` is the largest single storage binding the
-//! device allows (`min(maxStorageBufferBindingSize, maxBufferSize)`).
+//! device allows (`min(maxStorageBufferBindingSize, maxBufferSize)`, see
+//! [`kv_buffer_limit`]).
 
 /// Default total KV-cache budget (2 GiB).
 pub const DEFAULT_KV_BUDGET_BYTES: u64 = 2 << 30;
@@ -71,13 +72,29 @@ fn round_ctx(n: usize) -> usize {
     }
 }
 
+/// The largest single KV buffer the device serves: `min(binding, buffer)` of
+/// whichever limits are known, [`WEBGPU_MIN_BINDING_BYTES`] when neither is.
+/// Both the engine (adapter limits) and `contextFor` (caller-supplied limits)
+/// go through this, so the prediction and the load agree.
+pub fn kv_buffer_limit(binding_bytes: Option<u64>, buffer_bytes: Option<u64>) -> u64 {
+    match (binding_bytes.filter(|b| *b > 0), buffer_bytes.filter(|b| *b > 0)) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => WEBGPU_MIN_BINDING_BYTES,
+    }
+}
+
 /// Contexts to try, largest first: `start`, then halvings, ending at
-/// `min(CONTEXT_FLOOR, trained_ctx)`. Empty when `start` is below that floor.
+/// `min(CONTEXT_FLOOR, trained_ctx)`. A `start` already below that floor (a
+/// small budget or binding) is tried as-is: `[start]`. The first entry is
+/// always what [`served_context`] predicted, so `contextFor` matches what
+/// `load` serves when the first allocation succeeds.
 pub fn retry_contexts(start: usize, s: &KvShape) -> Vec<usize> {
     let floor = CONTEXT_FLOOR.min(s.trained_ctx).max(1);
     let mut out = Vec::new();
-    let mut c = start.min(s.trained_ctx);
-    if c < floor {
+    let mut c = start.min(s.trained_ctx).max(1);
+    if c <= floor {
+        out.push(c);
         return out;
     }
     while c > floor {
@@ -126,8 +143,35 @@ mod tests {
     fn retries_halve_to_the_floor() {
         assert_eq!(retry_contexts(14_336, &B8), vec![14_336, 7_168, 3_584, 2_048]);
         assert_eq!(retry_contexts(2_048, &B8), vec![2_048]);
-        assert!(retry_contexts(1_000, &B8).is_empty());
         let tiny = KvShape { trained_ctx: 32, ..B8 };
         assert_eq!(retry_contexts(32, &tiny), vec![32]);
+    }
+
+    #[test]
+    fn start_below_the_floor_is_tried_as_is() {
+        // A small budget plans under 2 048: that context is still attempted.
+        assert_eq!(retry_contexts(1_000, &B8), vec![1_000]);
+        assert_eq!(retry_contexts(1, &B8), vec![1]);
+        let planned = served_context(&B8, true, 64 << 20, WEBGPU_MIN_BINDING_BYTES);
+        assert!(planned < CONTEXT_FLOOR);
+        assert_eq!(retry_contexts(planned, &B8).first(), Some(&planned));
+    }
+
+    #[test]
+    fn first_retry_is_the_prediction() {
+        for (budget, f16) in [(DEFAULT_KV_BUDGET_BYTES, true), (DEFAULT_KV_BUDGET_BYTES, false), (16 << 20, true)] {
+            let planned = served_context(&B17, f16, budget, WEBGPU_MIN_BINDING_BYTES);
+            assert_eq!(retry_contexts(planned, &B17)[0], planned);
+        }
+    }
+
+    #[test]
+    fn buffer_limit_is_the_min_of_known_limits() {
+        assert_eq!(kv_buffer_limit(Some(256 << 20), Some(1 << 30)), 256 << 20);
+        assert_eq!(kv_buffer_limit(Some(1 << 30), Some(256 << 20)), 256 << 20);
+        assert_eq!(kv_buffer_limit(Some(512), None), 512);
+        assert_eq!(kv_buffer_limit(None, Some(512)), 512);
+        assert_eq!(kv_buffer_limit(Some(0), None), WEBGPU_MIN_BINDING_BYTES);
+        assert_eq!(kv_buffer_limit(None, None), WEBGPU_MIN_BINDING_BYTES);
     }
 }

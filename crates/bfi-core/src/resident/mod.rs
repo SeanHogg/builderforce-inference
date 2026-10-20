@@ -14,6 +14,7 @@
 //! [`ResidentError::UnsupportedType`] naming the tensor.
 
 mod device;
+mod health;
 mod ops;
 
 #[cfg(test)]
@@ -60,6 +61,13 @@ pub enum ResidentError {
     BadShape { tensor: String, msg: String },
     #[error("GPU readback failed: {0}")]
     Readback(String),
+    /// An allocation (upload, KV cache) hit a WebGPU out-of-memory or
+    /// validation error; the buffers it made are invalid.
+    #[error("GPU allocation failed: {0}")]
+    Allocation(String),
+    /// `device.lost` fired; nothing on this device works any more.
+    #[error("the GPU device was lost ({0})")]
+    DeviceLost(String),
 }
 
 /// An f32 (or u32) device buffer of `len` elements.
@@ -100,9 +108,11 @@ impl Weight {
 pub struct Gpu {
     client: ResidentClient,
     /// The raw wgpu device, when we created it (browser path): lets
-    /// [`Gpu::kv_fits`] probe allocations inside an out-of-memory error scope,
-    /// which CubeCL does not expose.
+    /// [`Gpu::kv_fits`] / [`Gpu::checked`] run allocations inside error scopes,
+    /// which CubeCL does not expose (see `health.rs`).
     probe_device: Option<wgpu::Device>,
+    /// Set by the device-lost callback.
+    health: health::DeviceHealth,
 }
 
 impl Gpu {
@@ -110,14 +120,18 @@ impl Gpu {
         Self {
             client,
             probe_device: None,
+            health: health::DeviceHealth::default(),
         }
     }
 
     #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
     pub(crate) fn with_probe_device(client: ResidentClient, device: wgpu::Device) -> Self {
+        let health = health::DeviceHealth::default();
+        health.watch(&device);
         Self {
             client,
             probe_device: Some(device),
+            health,
         }
     }
 
@@ -132,34 +146,6 @@ impl Gpu {
             elems,
             f16,
         }
-    }
-
-    /// Whether `count` storage buffers of `buffer_bytes` each can be allocated
-    /// right now. Allocates them inside WebGPU out-of-memory + validation error
-    /// scopes, awaits the scopes, then destroys them. Without a probe device
-    /// (native wgpu, tests) it trusts the planned size and returns `true`.
-    pub async fn kv_fits(&self, buffer_bytes: u64, count: usize) -> bool {
-        let Some(device) = &self.probe_device else {
-            return true;
-        };
-        let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let invalid = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let buffers: Vec<wgpu::Buffer> = (0..count)
-            .map(|_| {
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("bfi-kv-probe"),
-                    size: buffer_bytes.max(4).div_ceil(4) * 4,
-                    usage: wgpu::BufferUsages::STORAGE,
-                    mapped_at_creation: false,
-                })
-            })
-            .collect();
-        let invalid_err = invalid.pop().await;
-        let oom_err = oom.pop().await;
-        for b in &buffers {
-            b.destroy();
-        }
-        invalid_err.is_none() && oom_err.is_none()
     }
 
     pub fn client(&self) -> &ResidentClient {

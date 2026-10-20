@@ -262,3 +262,20 @@ fn swiglu_add_copy_match_cpu() {
     assert_eq!(&c[2..7], &b[290..295]);
     assert_eq!(c[0], 0.0);
 }
+
+#[test]
+fn checked_runs_work_and_a_lost_device_refuses() {
+    let Some(g) = gpu() else { return };
+    // Native wgpu has no probe device: the closure runs, nothing is scoped.
+    let t = block_on(g.checked("upload", || g.upload_f32(&[1.0, 2.0]))).expect("checked");
+    assert_eq!(read(&g, &t), vec![1.0, 2.0]);
+    block_on(g.drain()).expect("drain");
+    assert!(g.lost().is_none());
+
+    g.health.mark_lost("Unknown: test".into());
+    let clone = g.clone();
+    assert_eq!(clone.lost().as_deref(), Some("Unknown: test"), "clones share the flag");
+    let err = block_on(clone.checked("upload", || ())).err().expect("lost");
+    assert!(matches!(err, ResidentError::DeviceLost(_)), "{err}");
+    assert!(matches!(block_on(clone.drain()), Err(ResidentError::DeviceLost(_))));
+}

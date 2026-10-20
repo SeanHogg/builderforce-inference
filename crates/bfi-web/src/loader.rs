@@ -8,16 +8,18 @@
 
 use std::rc::Rc;
 
-use bfi_core::resident::Gpu;
+use bfi_core::resident::{Gpu, ResidentError};
 use bfi_gguf::TensorStream;
-use bfi_models::kv_plan::{kv_buffer_bytes, retry_contexts, served_context, DEFAULT_KV_BUDGET_BYTES};
+use bfi_models::kv_plan::{
+    kv_buffer_bytes, kv_buffer_limit, retry_contexts, served_context, DEFAULT_KV_BUDGET_BYTES,
+};
 use bfi_models::{Qwen3Resident, Qwen3ResidentLoader};
 use bfi_runtime::Tokenizer;
 use js_sys::{Function, Object, Uint8Array};
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 
-use crate::errors::{classify, error, gguf, Kind};
+use crate::errors::{classify, error, gguf, gpu_error, Kind};
 use crate::js;
 use crate::support::AdapterInfo;
 
@@ -41,11 +43,12 @@ impl LoadOptions {
     }
 }
 
-/// The largest single storage buffer the adapter allows.
+/// The largest single storage buffer the adapter allows (same rule as `contextFor`).
 pub fn max_buffer_bytes(adapter: &AdapterInfo) -> u64 {
-    let binding = adapter.max_binding_bytes;
-    let buffer = if adapter.max_buffer_bytes > 0.0 { adapter.max_buffer_bytes } else { binding };
-    binding.min(buffer) as u64
+    kv_buffer_limit(
+        Some(adapter.max_binding_bytes as u64),
+        Some(adapter.max_buffer_bytes as u64),
+    )
 }
 
 /// A loaded model plus everything `chat` needs between turns.
@@ -120,7 +123,7 @@ pub async fn load(
             loaded += bytes.len() as f64;
             let done = stream.push(&bytes).map_err(gguf)?;
             drop(bytes);
-            accept(gpu, &stream, &mut pending, done)?;
+            upload(gpu, &stream, &mut pending, done).await?;
             if let Some(cb) = on_progress {
                 let _ = cb.call2(
                     &JsValue::NULL,
@@ -130,7 +133,7 @@ pub async fn load(
             }
         }
         let tail = stream.flush_header().map_err(gguf)?;
-        accept(gpu, &stream, &mut pending, tail)?;
+        upload(gpu, &stream, &mut pending, tail).await?;
         stream.finish().map_err(|_| {
             error(
                 Kind::LoadFailed,
@@ -149,31 +152,45 @@ pub async fn load(
         template,
     } = pending.ok_or_else(|| error(Kind::LoadFailed, "empty GGUF stream"))?;
     // f16 KV when the adapter offers shader-f16 (half the bytes → twice the
-    // context); f32 otherwise. Start at the planned context and halve on
-    // allocation failure down to the floor, never above the trained context.
+    // context); f32 otherwise. Start at the planned context (what `contextFor`
+    // predicts) and halve on allocation failure down to the floor, never above
+    // the trained context. A failure is either the probe or the real
+    // allocation (inside error scopes) reporting out-of-memory.
     let shape = loader.kv_shape();
     let kv_f16 = adapter.f16;
     let max_buffer = max_buffer_bytes(adapter);
     let planned = served_context(&shape, kv_f16, opts.kv_budget_bytes, max_buffer);
-    let mut n_ctx = None;
+    let mut model = gpu
+        .checked("assemble", || loader.assemble(kv_f16, adapter.max_binding_bytes as u64))
+        .await
+        .map_err(|e| gpu_error(Kind::LoadFailed, &e))?
+        .map_err(|e| classify(Kind::LoadFailed, &e))?;
+    let mut failures: Vec<String> = Vec::new();
     for ctx in retry_contexts(planned, &shape) {
-        if gpu.kv_fits(kv_buffer_bytes(&shape, kv_f16, ctx), 2 * shape.n_layer).await {
-            n_ctx = Some(ctx);
-            break;
+        if !gpu.kv_fits(kv_buffer_bytes(&shape, kv_f16, ctx), 2 * shape.n_layer).await {
+            failures.push(format!("{ctx} (probe)"));
+            continue;
+        }
+        match gpu.checked("KV cache", || model.allocate_kv(ctx)).await {
+            Ok(()) => break,
+            Err(e @ ResidentError::DeviceLost(_)) => return Err(gpu_error(Kind::LoadFailed, &e)),
+            Err(e) => {
+                model.release_kv();
+                gpu.release_unused();
+                failures.push(format!("{ctx} ({e})"));
+            }
         }
     }
-    let n_ctx = n_ctx.ok_or_else(|| {
-        error(
+    if model.n_ctx() == 0 {
+        return Err(error(
             Kind::LoadFailed,
             format!(
-                "the KV cache does not fit: planned {planned} tokens, the floor failed to allocate (kvBudgetBytes {})",
+                "the KV cache does not fit: planned {planned} tokens; tried {} and none allocated (kvBudgetBytes {})",
+                failures.join(", "),
                 opts.kv_budget_bytes
             ),
-        )
-    })?;
-    let model = loader
-        .finish(n_ctx, kv_f16, adapter.max_binding_bytes as u64)
-        .map_err(|e| classify(Kind::LoadFailed, &e))?;
+        ));
+    }
     Ok(Loaded {
         model,
         tokenizer,
@@ -181,6 +198,22 @@ pub async fn load(
         cached: Vec::new(),
         pieces: None,
     })
+}
+
+/// [`accept`] inside the GPU's error scopes, so an out-of-memory weight upload
+/// fails the load instead of leaving an invalid buffer behind.
+async fn upload(
+    gpu: &Gpu,
+    stream: &TensorStream,
+    pending: &mut Option<Pending>,
+    done: Vec<bfi_gguf::StreamedTensor>,
+) -> Result<(), JsValue> {
+    if done.is_empty() && pending.is_some() {
+        return Ok(());
+    }
+    gpu.checked("weight upload", || accept(gpu, stream, pending, done))
+        .await
+        .map_err(|e| gpu_error(Kind::LoadFailed, &e))?
 }
 
 /// Create the model loader + tokenizer once the header is known, then upload

@@ -25,7 +25,8 @@ pub async fn open_webgpu() -> Gpu {
         cubecl::wgpu::RuntimeOptions::default(),
     )
     .await;
-    // Keep the raw device for KV allocation probes (error scopes).
+    // Keep the raw device for error-scoped allocations and `device.lost`
+    // (health.rs); CubeCL exposes neither.
     Gpu::with_probe_device(WgpuRuntime::client(&device), setup.device)
 }
 

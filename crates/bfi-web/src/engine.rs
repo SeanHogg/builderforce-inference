@@ -1,6 +1,8 @@
 //! The exported `BfiEngine` class. Owns the WebGPU device and at most one
 //! loaded model; `load` / `chat` are exclusive (a second call while one runs
-//! rejects with `busy:`), `unload` during a chat aborts it.
+//! rejects with `busy:`), `unload` during a chat aborts it. Once the device is
+//! lost (`device.lost`), the model is dropped and every later `load` / `chat`
+//! rejects with `webgpu_unavailable:` — create a new engine.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -22,7 +24,8 @@ export interface BfiContextShape {
   layers: number; kvHeads: number; headDim: number; trainedContext: number;
   kvBudgetBytes?: number; f16?: boolean;
   maxStorageBufferBindingSizeBytes?: number;
-  /** @deprecated Use maxStorageBufferBindingSizeBytes. */
+  maxBufferSizeBytes?: number;
+  /** @deprecated Alias of maxBufferSizeBytes (as in BfiSupport); min-ed with the binding limit. */
   maxBufferBytes?: number;
 }
 export interface BfiSupport {
@@ -39,6 +42,21 @@ struct State {
     model: Option<Loaded>,
     busy: bool,
     unload_requested: bool,
+}
+
+impl State {
+    /// `Err(webgpu_unavailable)` once the device is lost; drops the model (its
+    /// buffers belong to the dead device, so there is nothing to release).
+    fn alive(&mut self) -> Result<(), JsValue> {
+        let Some(why) = self.gpu.lost() else {
+            return Ok(());
+        };
+        self.model = None;
+        Err(error(
+            Kind::WebgpuUnavailable,
+            format!("the GPU device was lost ({why}); create a new BfiEngine"),
+        ))
+    }
 }
 
 /// bfi on WebGPU. See the crate docs and `README.md` for the JS contract.
@@ -81,8 +99,10 @@ impl BfiEngine {
 
     /// Predict the context `load` will serve for a model shape, before
     /// downloading it (pure; same function the engine uses). Defaults:
-    /// `kvBudgetBytes` 2 GiB, `f16` false, `maxBufferBytes` 128 MiB (WebGPU's
-    /// guaranteed binding). The engine may serve less if allocation fails.
+    /// `kvBudgetBytes` 2 GiB, `f16` false, buffer cap 128 MiB (WebGPU's
+    /// guaranteed binding). The cap is `min(maxStorageBufferBindingSizeBytes,
+    /// maxBufferSizeBytes ?? maxBufferBytes)` of whichever are given, exactly as
+    /// `load` caps the adapter. The engine may serve less if allocation fails.
     #[wasm_bindgen(js_name = contextFor)]
     pub fn context_for(
         #[wasm_bindgen(unchecked_param_type = "BfiContextShape")] shape: Object,
@@ -109,6 +129,7 @@ impl BfiEngine {
                 if s.busy {
                     return Err(error(Kind::Busy, "another load or chat is running"));
                 }
+                s.alive()?;
                 s.busy = true;
                 s.unload_requested = false;
                 if s.model.take().is_some() {
@@ -120,6 +141,8 @@ impl BfiEngine {
                 loader::load(&gpu, &adapter, &chunks, total_bytes, on_progress.as_ref(), opts).await;
             let mut s = state.borrow_mut();
             s.busy = false;
+            // A lost device outranks whatever the load returned.
+            s.alive()?;
             match result {
                 Ok(loaded) if !s.unload_requested => {
                     let info = loaded.info();
@@ -157,6 +180,7 @@ impl BfiEngine {
                 if s.busy {
                     return Err(error(Kind::Busy, "another load or chat is running"));
                 }
+                s.alive()?;
                 let Some(m) = s.model.take() else {
                     return Err(error(Kind::NotLoaded, "call load() first"));
                 };
@@ -169,14 +193,20 @@ impl BfiEngine {
                 &request_json,
                 &on_chunk,
                 signal.as_ref(),
-                move || flag.borrow().unload_requested,
+                // Stop at the next chunk on unload or a lost device.
+                move || {
+                    let s = flag.borrow();
+                    s.unload_requested || s.gpu.lost().is_some()
+                },
             )
             .await;
             let mut s = state.borrow_mut();
             s.busy = false;
-            if s.unload_requested {
+            if s.unload_requested || s.gpu.lost().is_some() {
                 s.unload_requested = false;
                 drop(loaded);
+                // Lost: reject webgpu_unavailable (nothing to release on a dead device).
+                s.alive()?;
                 s.gpu.release_unused();
             } else {
                 s.model = Some(loaded);

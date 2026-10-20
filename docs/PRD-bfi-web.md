@@ -116,15 +116,21 @@ same probe and never creates a device.
   `kvBudgetBytes` caps *total* KV memory (default 2 GiB, `load(…, { kvBudgetBytes })`);
   every layer's K and V are separate buffers, so the per-binding limit only
   applies to one of them. `maxBufferBytes` = `min(maxStorageBufferBindingSize,
-  maxBufferSize)` of the adapter (`contextFor` defaults to WebGPU's guaranteed
-  128 MiB). The attention-score scratch does not cap the context: long contexts
+  maxBufferSize)` of the adapter (`contextFor` takes the min of
+  `maxStorageBufferBindingSizeBytes` and `maxBufferSizeBytes` — or its
+  deprecated alias `maxBufferBytes` — when given, and defaults to WebGPU's
+  guaranteed 128 MiB). The attention-score scratch does not cap the context: long contexts
   use smaller prefill chunks (`max_binding / (n_head · ctx · 4)`, at most 64).
 - **Allocation retry.** Before allocating, `load` probes `2 · layers` buffers of
   the planned size inside WebGPU out-of-memory + validation error scopes (CubeCL
   does not expose scopes, so bfi-core keeps the raw `wgpu::Device` from
-  `init_setup_async`). On failure it halves the context (rounded to 256) down to
-  `min(2048, trainedContext)`; if the floor fails, `load` rejects
-  `load_failed:`. `BfiModelInfo.contextTokens` is what was allocated, and
+  `init_setup_async`), then allocates the real cache inside the same scopes
+  (weight uploads are scoped too). On either failure it halves the context
+  (rounded to 256) down to `min(2048, trainedContext)`; a planned context
+  already below that floor (small budget or binding) is tried as-is. If every
+  attempt fails, `load` rejects `load_failed:` listing the contexts tried.
+  A lost device (`device.lost`) drops the model; later calls reject
+  `webgpu_unavailable:`. `BfiModelInfo.contextTokens` is what was allocated, and
   `kvF16` says which layout.
 - Predicted served context at the default 2 GiB budget (128 MiB binding, no
   OOM). Shapes from the HF `config.json` of `prism-ml/Bonsai-{8B,4B,1.7B}-unpacked`;

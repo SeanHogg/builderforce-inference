@@ -4,15 +4,19 @@
 //! stop strings, tool-call detection and chunk JSON all come from
 //! `bfi_runtime::openai`; this loop only drives the GPU: enqueue a forward,
 //! await the logits readback (the single host sync per token, which also yields
-//! to the browser event loop), step the turn, emit its chunks.
+//! to the browser event loop), step the turn, emit its chunks. Long prompts are
+//! fed in groups of [`Qwen3Resident::prefill_yield_tokens`] with a one-word
+//! readback between groups, so an abort lands mid-prompt.
 
 use std::rc::Rc;
 
+use bfi_core::resident::DeviceTensor;
+use bfi_models::Qwen3Resident;
 use bfi_runtime::openai::{ChatRequest, ChatTurn, Step};
 use js_sys::{Function, Object};
 use wasm_bindgen::JsValue;
 
-use crate::errors::{classify, error, Kind};
+use crate::errors::{classify, error, gpu_error, Kind};
 use crate::js;
 use crate::loader::Loaded;
 
@@ -54,22 +58,19 @@ pub async fn chat(
     let keep = common_prefix(&loaded.cached, &ids).min(ids.len() - 1);
     loaded.model.rewind(keep);
     loaded.cached.truncate(keep);
-    let mut logits = loaded
-        .model
-        .forward(&ids[keep..])
-        .map_err(|e| classify(Kind::Engine, &e))?;
-    loaded.cached.extend_from_slice(&ids[keep..]);
+    let stop = || js::aborted(signal) || cancelled();
+    let mut logits = prefill(&mut loaded.model, &mut loaded.cached, &ids[keep..], &stop).await?;
 
     let gpu = loaded.model.gpu().clone();
     loop {
-        if js::aborted(signal) || cancelled() {
+        if stop() {
             return Err(error(Kind::Aborted, ""));
         }
         let values = gpu
             .read_f32(&logits)
             .await
-            .map_err(|e| error(Kind::Engine, e))?;
-        if js::aborted(signal) || cancelled() {
+            .map_err(|e| gpu_error(Kind::Engine, &e))?;
+        if stop() {
             return Err(error(Kind::Aborted, ""));
         }
         let (step, chunks) = turn.step(&values, &loaded.tokenizer, &pieces);
@@ -91,6 +92,41 @@ pub async fn chat(
     }
     debug_assert_eq!(loaded.cached.len(), loaded.model.n_past());
     Ok(turn.completion_json())
+}
+
+/// Feed `prompt` and return its last token's logits. All but the final group
+/// are enqueued without logits, each followed by a one-word readback that
+/// yields to the event loop; `stop` is checked before every group. `cached`
+/// tracks exactly what reached the KV cache, so an abort leaves it consistent.
+async fn prefill(
+    model: &mut Qwen3Resident,
+    cached: &mut Vec<u32>,
+    prompt: &[u32],
+    stop: &impl Fn() -> bool,
+) -> Result<DeviceTensor, JsValue> {
+    let group = model.prefill_yield_tokens().max(1);
+    // The final group carries the logits: the remainder, or a full group.
+    let tail = match prompt.len() % group {
+        0 => group,
+        r => r,
+    }
+    .min(prompt.len());
+    let (lead, last) = prompt.split_at(prompt.len() - tail);
+    let gpu = model.gpu().clone();
+    for part in lead.chunks(group) {
+        if stop() {
+            return Err(error(Kind::Aborted, ""));
+        }
+        model.prefill(part).map_err(|e| classify(Kind::Engine, &e))?;
+        cached.extend_from_slice(part);
+        gpu.drain().await.map_err(|e| gpu_error(Kind::Engine, &e))?;
+    }
+    if stop() {
+        return Err(error(Kind::Aborted, ""));
+    }
+    let logits = model.forward(last).map_err(|e| classify(Kind::Engine, &e))?;
+    cached.extend_from_slice(last);
+    Ok(logits)
 }
 
 /// Longest common prefix of the cached ids and a new prompt.

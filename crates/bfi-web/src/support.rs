@@ -1,13 +1,11 @@
 //! `BfiEngine.support()`: WebGPU adapter probe. Requests an adapter only —
 //! never a device — so hosts can call it on every capability check.
 
+use bfi_models::kv_plan::WEBGPU_MIN_BINDING_BYTES;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 
 use crate::js;
-
-/// WebGPU's guaranteed `maxStorageBufferBindingSize` when an adapter reports none.
-const WEBGPU_MIN_BINDING_BYTES: f64 = 128.0 * 1024.0 * 1024.0;
 
 #[derive(Debug, Clone)]
 pub struct AdapterInfo {
@@ -83,7 +81,8 @@ pub async fn probe() -> AdapterInfo {
     let max_buffer_bytes = js::get(&limits, "maxBufferSize").as_f64().unwrap_or(0.0);
     let max_binding_bytes = js::get(&limits, "maxStorageBufferBindingSize")
         .as_f64()
-        .unwrap_or(WEBGPU_MIN_BINDING_BYTES);
+        // WebGPU's guaranteed binding when the adapter reports none.
+        .unwrap_or(WEBGPU_MIN_BINDING_BYTES as f64);
     AdapterInfo {
         supported: true,
         reason: None,

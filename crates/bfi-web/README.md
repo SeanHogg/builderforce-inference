@@ -78,7 +78,7 @@ the conversation so far only prefills the new suffix.
 
 | Prefix | When |
 |---|---|
-| `webgpu_unavailable:` | no `navigator.gpu`, no adapter |
+| `webgpu_unavailable:` | no `navigator.gpu`, no adapter, or the device was lost (create a new engine) |
 | `unsupported_type:` | a tensor type the WebGPU engine cannot run (names the tensor); WebGPU runs `Q1_0`, `Q8_0`, `F16`, `F32` matrices |
 | `context_exceeded:` | the prompt does not fit the loaded context |
 | `aborted` | `signal` fired, or `unload()` during `chat` |

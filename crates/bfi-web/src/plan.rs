@@ -1,7 +1,7 @@
 //! `BfiEngine.contextFor`: the JS face of `bfi_models::kv_plan::served_context`,
 //! so the host can predict the served context before downloading a model.
 
-use bfi_models::kv_plan::{served_context, KvShape, DEFAULT_KV_BUDGET_BYTES, WEBGPU_MIN_BINDING_BYTES};
+use bfi_models::kv_plan::{kv_buffer_limit, served_context, KvShape, DEFAULT_KV_BUDGET_BYTES};
 use js_sys::Object;
 
 use crate::js;
@@ -10,8 +10,18 @@ fn num(o: &Object, key: &str) -> Option<f64> {
     js::get(o, key).as_f64().filter(|v| v.is_finite() && *v >= 0.0)
 }
 
-/// Context prediction uses the storage-binding limit, not the allocation limit.
 /// Missing / invalid shape fields yield 0.
+///
+/// The per-buffer cap is [`kv_buffer_limit`] — the same `min(binding, buffer)`
+/// `load` applies to the adapter — over:
+/// - binding: `maxStorageBufferBindingSizeBytes`;
+/// - buffer: `maxBufferSizeBytes`, else the deprecated `maxBufferBytes`.
+///
+/// `maxBufferBytes` is the alias `BfiSupport` has always carried, where it means
+/// `maxBufferSize`; older callers passed it here alone as the binding limit,
+/// and alone it is still used as the cap (unchanged behaviour). When a binding
+/// limit is also given it is min-ed in, so `contextFor` never predicts more than
+/// `load` serves (`{ ...support, ...shape }` predicts exactly what `load` plans).
 pub fn context_for_js(o: &Object) -> usize {
     let (Some(layers), Some(kv_heads), Some(head_dim), Some(trained)) = (
         num(o, "layers"),
@@ -28,10 +38,11 @@ pub fn context_for_js(o: &Object) -> usize {
         trained_ctx: trained as usize,
     };
     let budget = num(o, "kvBudgetBytes").map(|v| v as u64).unwrap_or(DEFAULT_KV_BUDGET_BYTES);
-    let max_buffer = num(o, "maxStorageBufferBindingSizeBytes")
+    let binding = num(o, "maxStorageBufferBindingSizeBytes").map(|v| v as u64);
+    let buffer = num(o, "maxBufferSizeBytes")
         .or_else(|| num(o, "maxBufferBytes"))
-        .map(|v| v as u64)
-        .unwrap_or(WEBGPU_MIN_BINDING_BYTES);
+        .map(|v| v as u64);
+    let max_buffer = kv_buffer_limit(binding, buffer);
     let f16 = js::get(o, "f16").as_bool().unwrap_or(false);
     served_context(&shape, f16, budget, max_buffer)
 }
