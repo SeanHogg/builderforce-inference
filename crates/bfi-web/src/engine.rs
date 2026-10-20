@@ -20,9 +20,17 @@ export interface BfiModelInfo { arch: string; contextTokens: number; vocab: numb
 export interface BfiLoadOptions { kvBudgetBytes?: number }
 export interface BfiContextShape {
   layers: number; kvHeads: number; headDim: number; trainedContext: number;
-  kvBudgetBytes?: number; f16?: boolean; maxBufferBytes?: number;
+  kvBudgetBytes?: number; f16?: boolean;
+  maxStorageBufferBindingSizeBytes?: number;
+  /** @deprecated Use maxStorageBufferBindingSizeBytes. */
+  maxBufferBytes?: number;
 }
-export interface BfiSupport { supported: boolean; reason?: string; maxBufferBytes: number; f16: boolean }
+export interface BfiSupport {
+  contractVersion: 2; supported: boolean; reason?: string;
+  maxBufferSizeBytes: number; maxStorageBufferBindingSizeBytes: number;
+  /** @deprecated Use maxBufferSizeBytes. */
+  maxBufferBytes: number; requestedPowerPreference: string; f16: boolean
+}
 "#;
 
 struct State {

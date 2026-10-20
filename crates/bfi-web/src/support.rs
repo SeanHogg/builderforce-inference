@@ -32,11 +32,15 @@ impl AdapterInfo {
         }
     }
 
-    /// `{ supported, reason?, maxBufferBytes, f16 }`.
+    /// Version 2 keeps allocation and storage-binding limits explicit.
     pub fn to_js(&self) -> JsValue {
         let mut pairs = vec![
+            ("contractVersion", JsValue::from_f64(2.0)),
             ("supported", JsValue::from_bool(self.supported)),
+            ("maxBufferSizeBytes", JsValue::from_f64(self.max_buffer_bytes)),
+            ("maxStorageBufferBindingSizeBytes", JsValue::from_f64(self.max_binding_bytes)),
             ("maxBufferBytes", JsValue::from_f64(self.max_buffer_bytes)),
+            ("requestedPowerPreference", JsValue::from_str("high-performance")),
             ("f16", JsValue::from_bool(self.f16)),
         ];
         if let Some(r) = &self.reason {
