@@ -25,6 +25,8 @@ pub enum Kind {
     Busy,
     /// The GGUF stream was truncated, malformed, or not a supported architecture.
     LoadFailed,
+    /// CPU backend: packed weights + KV cache would not fit wasm32's 4 GiB memory.
+    CpuMemoryExceeded,
     /// Anything else (GPU readback, tokenizer).
     Engine,
 }
@@ -40,6 +42,7 @@ impl Kind {
             Kind::NotLoaded => "not_loaded",
             Kind::Busy => "busy",
             Kind::LoadFailed => "load_failed",
+            Kind::CpuMemoryExceeded => "cpu_memory_exceeded",
             Kind::Engine => "engine_error",
         }
     }

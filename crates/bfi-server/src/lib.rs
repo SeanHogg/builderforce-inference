@@ -138,7 +138,8 @@ pub async fn bind_next_free(
         return Ok((listener, addr));
     }
     let mut port = start_port;
-    let mut last_err: Option<anyhow::Error> = None;
+    // Assigned on every failed bind before the loop can break, so it needs no initial value.
+    let mut last_err: Option<anyhow::Error>;
     loop {
         match tokio::net::TcpListener::bind(format!("{host}:{port}")).await {
             Ok(listener) => {

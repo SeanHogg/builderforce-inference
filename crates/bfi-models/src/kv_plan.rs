@@ -72,6 +72,28 @@ fn round_ctx(n: usize) -> usize {
     }
 }
 
+/// Default KV budget on the CPU backend (512 MiB). The cache lives in wasm memory next
+/// to the packed weights, so it is budgeted far tighter than VRAM.
+pub const DEFAULT_CPU_KV_BUDGET_BYTES: u64 = 512 << 20;
+/// wasm32's linear-memory ceiling (65 536 pages of 64 KiB). Weights, KV cache and the
+/// working set all live inside it on the CPU backend.
+pub const WASM32_MEMORY_BYTES: u64 = 4 << 30;
+/// Headroom kept for activations, the tokenizer, the one tensor being streamed in and
+/// allocator slack, on top of weights + KV.
+pub const CPU_WORKING_SET_BYTES: u64 = 256 << 20;
+
+/// The context the CPU backend serves: f32 KV (no per-buffer cap — host memory has no
+/// storage-binding limit) under `kv_budget_bytes`, never above the trained context.
+pub fn cpu_served_context(s: &KvShape, kv_budget_bytes: u64) -> usize {
+    served_context(s, false, kv_budget_bytes, u64::MAX)
+}
+
+/// Memory the CPU backend needs to hold a model: its packed weights, a `ctx`-token f32
+/// KV cache and [`CPU_WORKING_SET_BYTES`]. Compared against [`WASM32_MEMORY_BYTES`].
+pub fn cpu_memory_bytes(weight_bytes: u64, s: &KvShape, ctx: usize) -> u64 {
+    weight_bytes + kv_bytes_per_token(s, false) * ctx as u64 + CPU_WORKING_SET_BYTES
+}
+
 /// The largest single KV buffer the device serves: `min(binding, buffer)` of
 /// whichever limits are known, [`WEBGPU_MIN_BINDING_BYTES`] when neither is.
 /// Both the engine (adapter limits) and `contextFor` (caller-supplied limits)
@@ -163,6 +185,23 @@ mod tests {
             let planned = served_context(&B17, f16, budget, WEBGPU_MIN_BINDING_BYTES);
             assert_eq!(retry_contexts(planned, &B17)[0], planned);
         }
+    }
+
+    #[test]
+    fn bonsai_cpu_contexts_and_memory_at_the_default_budget() {
+        let b = DEFAULT_CPU_KV_BUDGET_BYTES;
+        // f32 KV: 1.7B is 229 376 B/token, 4B / 8B 294 912 B/token.
+        assert_eq!(cpu_served_context(&B17, b), 2_304);
+        assert_eq!(cpu_served_context(&B4, b), 1_792);
+        assert_eq!(cpu_served_context(&B8, b), 1_792);
+        // Packed weights + KV + working set: every Bonsai fits wasm32's 4 GiB.
+        for (weights, shape) in [(248_302_272u64, B17), (572_270_624, B4), (1_158_654_496, B8)] {
+            let need = cpu_memory_bytes(weights, &shape, cpu_served_context(&shape, b));
+            assert!(need < WASM32_MEMORY_BYTES, "{need}");
+        }
+        // A budget past the ceiling is what `load` refuses.
+        let huge = cpu_served_context(&B8, 8 << 30);
+        assert!(cpu_memory_bytes(1_158_654_496, &B8, huge) > WASM32_MEMORY_BYTES);
     }
 
     #[test]

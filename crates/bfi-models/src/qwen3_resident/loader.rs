@@ -9,7 +9,7 @@ use bfi_gguf::{dequant_tensor, require_type, ModelHeader, StreamedTensor};
 
 use super::{Layer, Qwen3Resident};
 use crate::kv_plan::KvShape;
-use crate::qwen3::{parse_config, Qwen3Config, ARCH_NAME};
+use crate::qwen3::{dense_config, Qwen3Config, ARCH_NAME};
 
 enum Slot {
     Matrix(Weight),
@@ -34,10 +34,7 @@ impl Qwen3ResidentLoader {
             arch == ARCH_NAME,
             "architecture '{arch}' is not supported by the WebGPU engine (qwen3 only)"
         );
-        if let Some(n) = header.arch_u64("expert_count") {
-            ensure!(n == 0, "qwen3moe (expert_count={n}) is not supported; dense qwen3 only");
-        }
-        let cfg = parse_config(header)?;
+        let cfg = dense_config(header)?;
         Ok(Self {
             gpu,
             cfg,

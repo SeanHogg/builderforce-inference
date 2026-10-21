@@ -14,6 +14,7 @@ mod gpu;
 #[cfg(feature = "cube")]
 pub mod kernels;
 mod par;
+mod simd;
 #[cfg(feature = "webgpu")]
 pub mod resident;
 mod tensor;

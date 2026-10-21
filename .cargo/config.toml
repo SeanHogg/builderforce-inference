@@ -1,0 +1,7 @@
+# wasm32 builds (bfi-web, and `wasm-pack test` of bfi-core) use WebAssembly SIMD128:
+# the CPU backend's Q1_0 / f32 hot loops have `core::arch::wasm32` paths
+# (`crates/bfi-core/src/simd.rs`). Every browser with WebGPU also has SIMD128
+# (Chrome 91, Firefox 89, Safari 16.4), so this costs no reach the WebGPU engine had.
+# Note: a RUSTFLAGS environment variable REPLACES these flags — keep +simd128 in it.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

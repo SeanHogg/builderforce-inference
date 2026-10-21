@@ -2,23 +2,22 @@
 //!
 //! Request parsing, prompt rendering (GGUF chat template, tools), sampling,
 //! stop strings, tool-call detection and chunk JSON all come from
-//! `bfi_runtime::openai`; this loop only drives the GPU: enqueue a forward,
-//! await the logits readback (the single host sync per token, which also yields
-//! to the browser event loop), step the turn, emit its chunks. Long prompts are
-//! fed in groups of [`Qwen3Resident::prefill_yield_tokens`] with a one-word
-//! readback between groups, so an abort lands mid-prompt.
+//! `bfi_runtime::openai`; this loop only drives the backend ([`Runner`]): feed the
+//! prompt, await each step's logits (which also yields to the host's event loop),
+//! step the turn, emit its chunks. Long prompts are fed in groups of
+//! [`Runner::prefill_group`] tokens with a yield between groups, so an abort lands
+//! mid-prompt on either backend.
 
 use std::rc::Rc;
 
-use bfi_core::resident::DeviceTensor;
-use bfi_models::Qwen3Resident;
 use bfi_runtime::openai::{ChatRequest, ChatTurn, Step};
 use js_sys::{Function, Object};
 use wasm_bindgen::JsValue;
 
-use crate::errors::{classify, error, gpu_error, Kind};
+use crate::errors::{error, Kind};
 use crate::js;
 use crate::loader::Loaded;
+use crate::runner::Runner;
 
 pub async fn chat(
     loaded: &mut Loaded,
@@ -57,23 +56,17 @@ pub async fn chat(
     // always re-feed at least the last prompt token to get fresh logits.
     let keep = common_prefix(&loaded.cached, &ids).min(ids.len() - 1);
     loaded.model.rewind(keep);
+    // A backend that cannot rewind partway (recurrent state) restarts from empty.
+    let keep = loaded.model.n_past();
     loaded.cached.truncate(keep);
     let stop = || js::aborted(signal) || cancelled();
     let mut logits = prefill(&mut loaded.model, &mut loaded.cached, &ids[keep..], &stop).await?;
 
-    let gpu = loaded.model.gpu().clone();
     loop {
         if stop() {
             return Err(error(Kind::Aborted, ""));
         }
-        let values = gpu
-            .read_f32(&logits)
-            .await
-            .map_err(|e| gpu_error(Kind::Engine, &e))?;
-        if stop() {
-            return Err(error(Kind::Aborted, ""));
-        }
-        let (step, chunks) = turn.step(&values, &loaded.tokenizer, &pieces);
+        let (step, chunks) = turn.step(&logits, &loaded.tokenizer, &pieces);
         for c in chunks {
             on_chunk
                 .call1(&JsValue::NULL, &JsValue::from_str(&c))
@@ -81,11 +74,11 @@ pub async fn chat(
         }
         match step {
             Step::Feed(token) => {
-                logits = loaded
-                    .model
-                    .forward(&[token])
-                    .map_err(|e| classify(Kind::Engine, &e))?;
+                logits = loaded.model.logits(&[token]).await?;
                 loaded.cached.push(token);
+                if stop() {
+                    return Err(error(Kind::Aborted, ""));
+                }
             }
             Step::Done => break,
         }
@@ -95,16 +88,16 @@ pub async fn chat(
 }
 
 /// Feed `prompt` and return its last token's logits. All but the final group
-/// are enqueued without logits, each followed by a one-word readback that
-/// yields to the event loop; `stop` is checked before every group. `cached`
-/// tracks exactly what reached the KV cache, so an abort leaves it consistent.
+/// are fed without logits, each followed by a yield to the event loop; `stop`
+/// is checked before every group. `cached` tracks exactly what reached the KV
+/// cache, so an abort leaves it consistent.
 async fn prefill(
-    model: &mut Qwen3Resident,
+    model: &mut Runner,
     cached: &mut Vec<u32>,
     prompt: &[u32],
     stop: &impl Fn() -> bool,
-) -> Result<DeviceTensor, JsValue> {
-    let group = model.prefill_yield_tokens().max(1);
+) -> Result<Vec<f32>, JsValue> {
+    let group = model.prefill_group();
     // The final group carries the logits: the remainder, or a full group.
     let tail = match prompt.len() % group {
         0 => group,
@@ -112,19 +105,17 @@ async fn prefill(
     }
     .min(prompt.len());
     let (lead, last) = prompt.split_at(prompt.len() - tail);
-    let gpu = model.gpu().clone();
     for part in lead.chunks(group) {
         if stop() {
             return Err(error(Kind::Aborted, ""));
         }
-        model.prefill(part).map_err(|e| classify(Kind::Engine, &e))?;
+        model.prefill(part).await?;
         cached.extend_from_slice(part);
-        gpu.drain().await.map_err(|e| gpu_error(Kind::Engine, &e))?;
     }
     if stop() {
         return Err(error(Kind::Aborted, ""));
     }
-    let logits = model.forward(last).map_err(|e| classify(Kind::Engine, &e))?;
+    let logits = model.logits(last).await?;
     cached.extend_from_slice(last);
     Ok(logits)
 }

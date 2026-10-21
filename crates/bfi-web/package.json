@@ -1,7 +1,7 @@
 {
   "name": "@seanhogg/bfi-web",
   "version": "2026.10.4",
-  "description": "bfi in the browser: 1-bit Bonsai (GGUF Q1_0) on WebGPU. The BfiEngine class from Builderforce spec 34 §3.1.",
+  "description": "bfi in the browser: 1-bit Bonsai (GGUF Q1_0) on WebGPU, or on the CPU (wasm SIMD128) without a GPU. The BfiEngine class from Builderforce spec 34 §3.1.",
   "license": "MIT",
   "repository": {
     "type": "git",

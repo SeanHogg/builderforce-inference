@@ -1,7 +1,11 @@
-//! `BfiEngine.contextFor`: the JS face of `bfi_models::kv_plan::served_context`,
-//! so the host can predict the served context before downloading a model.
+//! `BfiEngine.contextFor`: the JS face of `bfi_models::kv_plan::served_context` (and
+//! `cpu_served_context` for `backend: 'cpu'`), so the host can predict the served
+//! context before downloading a model.
 
-use bfi_models::kv_plan::{kv_buffer_limit, served_context, KvShape, DEFAULT_KV_BUDGET_BYTES};
+use bfi_models::kv_plan::{
+    cpu_served_context, kv_buffer_limit, served_context, KvShape, DEFAULT_CPU_KV_BUDGET_BYTES,
+    DEFAULT_KV_BUDGET_BYTES,
+};
 use js_sys::Object;
 
 use crate::js;
@@ -37,7 +41,12 @@ pub fn context_for_js(o: &Object) -> usize {
         head_dim: head_dim as usize,
         trained_ctx: trained as usize,
     };
-    let budget = num(o, "kvBudgetBytes").map(|v| v as u64).unwrap_or(DEFAULT_KV_BUDGET_BYTES);
+    let budget = num(o, "kvBudgetBytes").map(|v| v as u64);
+    if js::get(o, "backend").as_string().as_deref() == Some("cpu") {
+        // What a CPU `load` serves: f32 KV, no storage-binding cap.
+        return cpu_served_context(&shape, budget.unwrap_or(DEFAULT_CPU_KV_BUDGET_BYTES));
+    }
+    let budget = budget.unwrap_or(DEFAULT_KV_BUDGET_BYTES);
     let binding = num(o, "maxStorageBufferBindingSizeBytes").map(|v| v as u64);
     let buffer = num(o, "maxBufferSizeBytes")
         .or_else(|| num(o, "maxBufferBytes"))

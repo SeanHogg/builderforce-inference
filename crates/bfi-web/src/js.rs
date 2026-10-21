@@ -42,3 +42,19 @@ pub fn aborted(signal: Option<&Object>) -> bool {
 pub fn now_secs() -> u64 {
     (js_sys::Date::now() / 1000.0) as u64
 }
+
+/// Resolve on the next macrotask (`setTimeout(…, 0)`), so the host's event loop runs —
+/// an `AbortSignal` fired by a click is seen, the page paints. The CPU backend computes
+/// synchronously, so it awaits this between token groups. Resolves at once where there
+/// is no `setTimeout`.
+pub async fn yield_now() {
+    let global = js_sys::global();
+    let set_timeout = get(&global, "setTimeout");
+    if !set_timeout.is_function() {
+        return;
+    }
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        let _ = call(&global, "setTimeout", &[resolve.into(), JsValue::from_f64(0.0)]);
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}

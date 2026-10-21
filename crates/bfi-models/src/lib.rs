@@ -7,22 +7,28 @@
 //! M3: `qwen35` (Bonsai): hybrid gated-delta + full attention, multi-section RoPE.
 //! Feature `webgpu`: `Qwen3Resident`, the GPU-resident qwen3 for the browser
 //! (1-bit Bonsai `Q1_0`), loaded tensor-by-tensor from a stream.
+//! Always: `Qwen3StreamLoader` → [`Session`], the same qwen3 streamed onto a host-tensor
+//! `Backend` (the browser engine's CPU backend, when there is no WebGPU).
 
 mod arch;
 pub mod kv_plan;
 mod qwen3;
 #[cfg(feature = "webgpu")]
 mod qwen3_resident;
+mod qwen3_stream;
 mod qwen35;
+mod session;
 mod state;
+#[cfg(test)]
+mod test_fixtures;
 mod tutil;
 
 pub use arch::{architecture_for, load_model, ArchReg, Architecture, Model};
 pub use qwen3::{Qwen3Arch, ARCH_NAME as QWEN3_ARCH, QWEN3};
 #[cfg(feature = "webgpu")]
-pub use qwen3_resident::{
-    Qwen3Resident, Qwen3ResidentLoader, CONTEXT_EXCEEDED, PREFILL_CHUNK, PREFILL_YIELD_CHUNKS,
-};
+pub use qwen3_resident::{Qwen3Resident, Qwen3ResidentLoader, PREFILL_CHUNK, PREFILL_YIELD_CHUNKS};
+pub use qwen3_stream::Qwen3StreamLoader;
+pub use session::{Session, CONTEXT_EXCEEDED};
 pub use kv_plan::{served_context, KvShape};
 pub use qwen35::{Qwen35Arch, ARCH_NAME as QWEN35_ARCH, QWEN35};
 pub use state::{Logits, SeqState, StateLayout};

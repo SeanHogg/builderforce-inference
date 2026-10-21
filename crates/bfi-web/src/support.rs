@@ -1,7 +1,12 @@
-//! `BfiEngine.support()`: WebGPU adapter probe. Requests an adapter only —
-//! never a device — so hosts can call it on every capability check.
+//! `BfiEngine.support()`: what each backend can do here. Requests a WebGPU adapter only
+//! — never a device — so hosts can call it on every capability check.
+//!
+//! The record keeps its version-2 top level (the WebGPU adapter's fields, as before) and
+//! adds `backends`: `webgpu` (the same adapter facts) and `cpu` (always supported; SIMD
+//! and thread count of this build, the KV budget and memory ceiling the CPU backend
+//! loads under, and `navigator.deviceMemory` when the browser reports it).
 
-use bfi_models::kv_plan::WEBGPU_MIN_BINDING_BYTES;
+use bfi_models::kv_plan::{DEFAULT_CPU_KV_BUDGET_BYTES, WASM32_MEMORY_BYTES, WEBGPU_MIN_BINDING_BYTES};
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 
@@ -19,6 +24,24 @@ pub struct AdapterInfo {
     pub f16: bool,
 }
 
+/// The CPU backend: the same kernels the native `bfi` runs, in wasm memory.
+#[derive(Debug, Clone)]
+pub struct CpuInfo {
+    /// Built with wasm SIMD128 (`.cargo/config.toml`).
+    pub simd: bool,
+    /// Worker threads the kernels use. 1: this build is single-threaded (see README).
+    pub threads: u32,
+    /// `navigator.deviceMemory` in bytes, when the browser reports it (Chromium; capped
+    /// at 8 GiB by the spec). Hosts weigh a CPU model against it.
+    pub device_memory_bytes: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Support {
+    pub webgpu: AdapterInfo,
+    pub cpu: CpuInfo,
+}
+
 impl AdapterInfo {
     fn unsupported(reason: impl Into<String>) -> Self {
         Self {
@@ -30,15 +53,11 @@ impl AdapterInfo {
         }
     }
 
-    /// Version 2 keeps allocation and storage-binding limits explicit.
-    pub fn to_js(&self) -> JsValue {
+    fn backend_js(&self) -> JsValue {
         let mut pairs = vec![
-            ("contractVersion", JsValue::from_f64(2.0)),
             ("supported", JsValue::from_bool(self.supported)),
-            ("maxBufferSizeBytes", JsValue::from_f64(self.max_buffer_bytes)),
-            ("maxStorageBufferBindingSizeBytes", JsValue::from_f64(self.max_binding_bytes)),
             ("maxBufferBytes", JsValue::from_f64(self.max_buffer_bytes)),
-            ("requestedPowerPreference", JsValue::from_str("high-performance")),
+            ("maxStorageBufferBindingSizeBytes", JsValue::from_f64(self.max_binding_bytes)),
             ("f16", JsValue::from_bool(self.f16)),
         ];
         if let Some(r) = &self.reason {
@@ -48,7 +67,69 @@ impl AdapterInfo {
     }
 }
 
-pub async fn probe() -> AdapterInfo {
+impl CpuInfo {
+    fn backend_js(&self) -> JsValue {
+        let mut pairs = vec![
+            ("supported", JsValue::TRUE),
+            ("simd", JsValue::from_bool(self.simd)),
+            ("threads", JsValue::from_f64(self.threads as f64)),
+            ("kvBudgetBytes", JsValue::from_f64(DEFAULT_CPU_KV_BUDGET_BYTES as f64)),
+            ("maxMemoryBytes", JsValue::from_f64(WASM32_MEMORY_BYTES as f64)),
+        ];
+        if let Some(m) = self.device_memory_bytes {
+            pairs.push(("deviceMemoryBytes", JsValue::from_f64(m)));
+        }
+        js::object(&pairs)
+    }
+}
+
+impl Support {
+    /// Version 2 at the top level (the WebGPU adapter — unchanged for older hosts), plus
+    /// `backends`.
+    pub fn to_js(&self) -> JsValue {
+        let w = &self.webgpu;
+        let mut pairs = vec![
+            ("contractVersion", JsValue::from_f64(2.0)),
+            ("supported", JsValue::from_bool(w.supported)),
+            ("maxBufferSizeBytes", JsValue::from_f64(w.max_buffer_bytes)),
+            ("maxStorageBufferBindingSizeBytes", JsValue::from_f64(w.max_binding_bytes)),
+            ("maxBufferBytes", JsValue::from_f64(w.max_buffer_bytes)),
+            ("requestedPowerPreference", JsValue::from_str("high-performance")),
+            ("f16", JsValue::from_bool(w.f16)),
+        ];
+        if let Some(r) = &w.reason {
+            pairs.push(("reason", JsValue::from_str(r)));
+        }
+        pairs.push((
+            "backends",
+            js::object(&[("webgpu", w.backend_js()), ("cpu", self.cpu.backend_js())]),
+        ));
+        js::object(&pairs)
+    }
+}
+
+pub async fn probe() -> Support {
+    Support {
+        webgpu: probe_webgpu().await,
+        cpu: probe_cpu(),
+    }
+}
+
+fn probe_cpu() -> CpuInfo {
+    let navigator = js::get(&js_sys::global(), "navigator");
+    let device_memory_bytes = js::present(&navigator)
+        .then(|| js::get(&navigator, "deviceMemory").as_f64())
+        .flatten()
+        .filter(|gb| gb.is_finite() && *gb > 0.0)
+        .map(|gb| gb * (1u64 << 30) as f64);
+    CpuInfo {
+        simd: cfg!(target_feature = "simd128"),
+        threads: 1,
+        device_memory_bytes,
+    }
+}
+
+pub async fn probe_webgpu() -> AdapterInfo {
     let global = js_sys::global();
     let navigator = js::get(&global, "navigator");
     if !js::present(&navigator) {

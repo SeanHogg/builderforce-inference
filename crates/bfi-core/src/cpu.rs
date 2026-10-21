@@ -3,8 +3,9 @@ use crate::error::CoreError;
 use crate::tensor::{n_elems_of, Storage, Tensor};
 use crate::DType;
 use anyhow::{anyhow, bail, Context};
-use bfi_gguf::{dequant_tensor, lookup_type, GgmlType};
+use bfi_gguf::{dequant_tensor, lookup_type, GgmlType, TYPE_Q1_0};
 use crate::par;
+use crate::simd;
 
 pub struct CpuBackend;
 
@@ -357,11 +358,7 @@ impl Backend for CpuBackend {
                         continue;
                     }
                     let kv = &k_f[(s * hkv + hkv_i) * d..(s * hkv + hkv_i) * d + d];
-                    let mut dot = 0.0f32;
-                    for i in 0..d {
-                        dot += qv[i] * kv[i];
-                    }
-                    scores[s] = dot * scale;
+                    scores[s] = dot(qv, kv) * scale;
                     if scores[s] > max {
                         max = scores[s];
                     }
@@ -387,9 +384,7 @@ impl Backend for CpuBackend {
                         continue;
                     }
                     let vv = &v_f[(s * hkv + hkv_i) * d..(s * hkv + hkv_i) * d + d];
-                    for i in 0..d {
-                        ov[i] += w * vv[i];
-                    }
+                    simd::axpy(ov, w, vv);
                 }
             }
         }
@@ -497,7 +492,7 @@ fn matmul_dims(weights: &Tensor, x: &Tensor) -> anyhow::Result<(usize, usize, us
 }
 
 fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+    simd::dot_f32(a, b)
 }
 
 fn matmul_f32(w: &[f32], x: &[f32], out: &mut [f32], n_tokens: usize, n_out: usize, n_in: usize) {
@@ -553,6 +548,10 @@ fn matmul_quant(
 }
 
 fn vec_dot_row(ty: &GgmlType, wrow: &[u8], x: &[f32]) -> f32 {
+    // 1-bit Bonsai: the browser engine's CPU hot loop, SIMD128 on wasm (see `simd.rs`).
+    if ty.id == TYPE_Q1_0 {
+        return simd::dot_q1_0_row(wrow, x);
+    }
     let n_blocks = wrow.len() / ty.block_bytes;
     if let Some(vd) = ty.vec_dot {
         let mut s = 0.0f32;

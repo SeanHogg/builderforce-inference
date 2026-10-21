@@ -17,6 +17,7 @@ use anyhow::{anyhow, ensure, Result};
 use bfi_core::resident::{DeviceTensor, Gpu, KvBuffer, Weight};
 
 use crate::qwen3::{Qwen3Config, ARCH_NAME};
+use crate::session::CONTEXT_EXCEEDED;
 
 pub use loader::Qwen3ResidentLoader;
 
@@ -30,9 +31,6 @@ pub const PREFILL_CHUNK: usize = 64;
 /// seen mid-prompt instead of after the whole prompt has been enqueued.
 pub const PREFILL_YIELD_CHUNKS: usize = 4;
 
-/// Error text prefix when a request would overrun the allocated KV cache.
-/// `bfi-web` maps it to the `context_exceeded:` JS error.
-pub const CONTEXT_EXCEEDED: &str = "context_exceeded";
 
 struct Layer {
     attn_norm: DeviceTensor,

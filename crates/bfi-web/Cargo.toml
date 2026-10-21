@@ -1,6 +1,6 @@
 [package]
 name = "bfi-web"
-description = "bfi in the browser: 1-bit Bonsai (GGUF Q1_0) on WebGPU, exposed as the BfiEngine JS class"
+description = "bfi in the browser: 1-bit Bonsai (GGUF Q1_0) on WebGPU or the CPU, exposed as the BfiEngine JS class"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -51,13 +51,14 @@ struct Qwen3Layer {
     down: Tensor,
 }
 
-struct Qwen3Model {
+pub(crate) struct Qwen3Model {
     backend: Arc<dyn Backend>,
     cfg: Qwen3Config,
     rope: RopeParams,
     tok_embd: Tensor,
     output_norm: Tensor,
-    output: Tensor,
+    /// `None` = tied to `tok_embd` (Qwen3-0.6B, Bonsai 1.7B / 4B).
+    output: Option<Tensor>,
     layers: Vec<Qwen3Layer>,
 }
 
@@ -71,64 +72,117 @@ impl Architecture for Qwen3Arch {
         file: &GgufFile,
         backend: Arc<dyn Backend>,
     ) -> anyhow::Result<Box<dyn Model>> {
-        let header = file.header();
-        let mut cfg = parse_config(header)?;
-        if let Some(n) = header.arch_u64("expert_count") {
-            ensure!(
-                n == 0,
-                "qwen3moe (expert_count={n}) is not implemented; dense qwen3 only"
-            );
-        }
+        let cfg = dense_config(file.header())?;
+        let model = assemble(cfg, backend, |b, name| match file.header().tensor(name) {
+            Ok(_) => load_weight(file, b, name).map(Some),
+            Err(_) => Ok(None),
+        })?;
+        Ok(Box::new(model))
+    }
+}
 
-        let tok_embd = load_weight(file, backend.as_ref(), "token_embd.weight")?;
+/// The qwen3 config, refusing the MoE variant (dense qwen3 only). Every loader — the
+/// file one above, the streaming CPU one (`qwen3_stream`) and the GPU-resident one —
+/// starts here.
+pub(crate) fn dense_config(header: &ModelHeader) -> anyhow::Result<Qwen3Config> {
+    let cfg = parse_config(header)?;
+    if let Some(n) = header.arch_u64("expert_count") {
         ensure!(
-            tok_embd.shape.len() >= 2,
-            "token_embd.weight expected [n_vocab, n_embd], got {:?}",
-            tok_embd.shape
+            n == 0,
+            "qwen3moe (expert_count={n}) is not implemented; dense qwen3 only"
         );
-        cfg.n_vocab = tok_embd.shape[0];
-        ensure!(
-            tok_embd.shape[1] == cfg.n_embd,
-            "token_embd n_embd {} != embedding_length {}",
-            tok_embd.shape[1],
-            cfg.n_embd
-        );
+    }
+    Ok(cfg)
+}
 
-        let mut layers = Vec::with_capacity(cfg.n_layer);
-        for i in 0..cfg.n_layer {
-            layers.push(load_layer(file, backend.as_ref(), i, &cfg)?);
-        }
+/// Build the model from named weights. `take(backend, name)` yields `Ok(None)` for a
+/// tensor the GGUF does not carry; only `output.weight` may be absent (the lm_head is
+/// then tied to `token_embd.weight`, shared rather than copied).
+pub(crate) fn assemble(
+    mut cfg: Qwen3Config,
+    backend: Arc<dyn Backend>,
+    mut take: impl FnMut(&dyn Backend, &str) -> anyhow::Result<Option<Tensor>>,
+) -> anyhow::Result<Qwen3Model> {
+    let mut require = |name: &str| -> anyhow::Result<Tensor> {
+        take(backend.as_ref(), name)?.ok_or_else(|| anyhow!("missing tensor {name}"))
+    };
+    let tok_embd = require("token_embd.weight")?;
+    ensure!(
+        tok_embd.shape.len() >= 2,
+        "token_embd.weight expected [n_vocab, n_embd], got {:?}",
+        tok_embd.shape
+    );
+    cfg.n_vocab = tok_embd.shape[0];
+    ensure!(
+        tok_embd.shape[1] == cfg.n_embd,
+        "token_embd n_embd {} != embedding_length {}",
+        tok_embd.shape[1],
+        cfg.n_embd
+    );
 
-        let output_norm = load_weight(file, backend.as_ref(), "output_norm.weight")?;
-        let output = match file.header().tensor("output.weight") {
-            Ok(_) => load_weight(file, backend.as_ref(), "output.weight")?,
-            Err(_) => tok_embd.clone(),
+    let mut layers = Vec::with_capacity(cfg.n_layer);
+    for i in 0..cfg.n_layer {
+        let p = format!("blk.{i}");
+        let layer = Qwen3Layer {
+            attn_norm: require(&format!("{p}.attn_norm.weight"))?,
+            wq: require(&format!("{p}.attn_q.weight"))?,
+            wk: require(&format!("{p}.attn_k.weight"))?,
+            wv: require(&format!("{p}.attn_v.weight"))?,
+            wo: require(&format!("{p}.attn_output.weight"))?,
+            q_norm: require(&format!("{p}.attn_q_norm.weight"))?,
+            k_norm: require(&format!("{p}.attn_k_norm.weight"))?,
+            ffn_norm: require(&format!("{p}.ffn_norm.weight"))?,
+            gate: require(&format!("{p}.ffn_gate.weight"))?,
+            up: require(&format!("{p}.ffn_up.weight"))?,
+            down: require(&format!("{p}.ffn_down.weight"))?,
         };
+        layers.push(layer.checked(&cfg, i)?);
+    }
 
-        let rope = RopeParams {
-            n_dims: cfg.head_dim,
-            n_ctx: cfg.n_ctx,
-            freq_base: cfg.rope_freq_base,
-            freq_scale: 1.0,
-            ext_factor: 0.0,
-            attn_factor: 1.0,
-            beta_fast: 32.0,
-            beta_slow: 1.0,
-            n_rot: cfg.n_rot,
-            sections: None,
-            // llama.cpp `llama_model_rope_type`: QWEN3 → LLAMA_ROPE_TYPE_NEOX.
-            neox: true,
-        };
+    let output_norm = require("output_norm.weight")?;
+    drop(require);
+    let output = take(backend.as_ref(), "output.weight")?;
+    if let Some(out) = &output {
+        check_in_out(out, cfg.n_embd, cfg.n_vocab, 0, "output")
+            .map_err(|e| anyhow!("output.weight: {e}"))?;
+    }
 
-        Ok(Box::new(Qwen3Model {
-            backend,
-            cfg,
-            rope,
-            tok_embd,
-            output_norm,
-            output,
-            layers,
-        }))
+    let rope = RopeParams {
+        n_dims: cfg.head_dim,
+        n_ctx: cfg.n_ctx,
+        freq_base: cfg.rope_freq_base,
+        freq_scale: 1.0,
+        ext_factor: 0.0,
+        attn_factor: 1.0,
+        beta_fast: 32.0,
+        beta_slow: 1.0,
+        n_rot: cfg.n_rot,
+        sections: None,
+        // llama.cpp `llama_model_rope_type`: QWEN3 → LLAMA_ROPE_TYPE_NEOX.
+        neox: true,
+    };
+
+    Ok(Qwen3Model {
+        backend,
+        cfg,
+        rope,
+        tok_embd,
+        output_norm,
+        output,
+        layers,
+    })
+}
+
+impl Qwen3Model {
+    /// Serve at most `n_ctx` tokens (the KV cache a [`SeqState`] allocates), never more
+    /// than the trained context. RoPE keeps the trained context.
+    pub(crate) fn cap_context(&mut self, n_ctx: usize) {
+        self.cfg.n_ctx = n_ctx.min(self.cfg.n_ctx).max(1);
+    }
+
+    /// The lm_head: `output.weight`, or the token embedding when tied.
+    fn lm_head(&self) -> &Tensor {
+        self.output.as_ref().unwrap_or(&self.tok_embd)
     }
 }
 
@@ -229,7 +283,7 @@ impl Model for Qwen3Model {
         state.n += t;
         x = last_row(&x)?;
         x = b.rms_norm(&x, &self.output_norm, eps)?;
-        let logits = b.matmul_q(&self.output, &x)?;
+        let logits = b.matmul_q(self.lm_head(), &x)?;
         let values = tutil::as_f32(&logits)?.to_vec();
         ensure!(
             values.len() == self.cfg.n_vocab,
@@ -302,29 +356,6 @@ fn arch_usize(h: &ModelHeader, field: &str) -> anyhow::Result<usize> {
         .ok_or_else(|| anyhow!("missing GGUF metadata {}.{}", ARCH_NAME, field))
 }
 
-fn load_layer(
-    file: &GgufFile,
-    backend: &dyn Backend,
-    i: usize,
-    cfg: &Qwen3Config,
-) -> anyhow::Result<Qwen3Layer> {
-    let p = format!("blk.{i}");
-    Ok(Qwen3Layer {
-        attn_norm: load_weight(file, backend, &format!("{p}.attn_norm.weight"))?,
-        wq: load_weight(file, backend, &format!("{p}.attn_q.weight"))?,
-        wk: load_weight(file, backend, &format!("{p}.attn_k.weight"))?,
-        wv: load_weight(file, backend, &format!("{p}.attn_v.weight"))?,
-        wo: load_weight(file, backend, &format!("{p}.attn_output.weight"))?,
-        q_norm: load_weight(file, backend, &format!("{p}.attn_q_norm.weight"))?,
-        k_norm: load_weight(file, backend, &format!("{p}.attn_k_norm.weight"))?,
-        ffn_norm: load_weight(file, backend, &format!("{p}.ffn_norm.weight"))?,
-        gate: load_weight(file, backend, &format!("{p}.ffn_gate.weight"))?,
-        up: load_weight(file, backend, &format!("{p}.ffn_up.weight"))?,
-        down: load_weight(file, backend, &format!("{p}.ffn_down.weight"))?,
-    }
-    .checked(cfg, i)?)
-}
-
 impl Qwen3Layer {
     fn checked(self, cfg: &Qwen3Config, i: usize) -> anyhow::Result<Self> {
         let q_out = cfg.n_head * cfg.head_dim;
@@ -382,20 +413,34 @@ fn load_weight(file: &GgufFile, backend: &dyn Backend, name: &str) -> anyhow::Re
     let info = file
         .tensor_info(name)
         .with_context(|| format!("missing tensor {name}"))?;
-    let shape = tutil::logical_shape(&info.dims);
-    let bytes = file.tensor_bytes(name)?;
-    if tutil::is_f32(info.ggml_type) {
+    weight_from_bytes(backend, name, info.ggml_type, &info.dims, file.tensor_bytes(name)?)
+}
+
+/// One GGUF tensor onto `backend`: F32 as is, a 1-D vector (a norm) widened to F32 (the
+/// kernels read norms as F32), any other matrix uploaded PACKED (`Q1_0` stays 18 bytes
+/// per 128 weights). Shared by the file loader and the streaming one.
+pub(crate) fn weight_from_bytes(
+    backend: &dyn Backend,
+    name: &str,
+    ggml_type: u32,
+    dims: &[u64],
+    bytes: &[u8],
+) -> anyhow::Result<Tensor> {
+    let shape = tutil::logical_shape(dims);
+    if tutil::is_f32(ggml_type) {
         let data = tutil::f32_from_le_bytes(bytes)?;
-        backend.upload_f32(&shape, &data)
-    } else {
-        let dtype = DType::from_ggml(info.ggml_type).ok_or_else(|| {
-            anyhow!(
-                "unsupported ggml type {} for tensor {name}",
-                info.ggml_type
-            )
-        })?;
-        backend.upload_quant(&shape, dtype, bytes)
+        return backend.upload_f32(&shape, &data);
     }
+    if dims.len() <= 1 {
+        let ty = bfi_gguf::require_type(ggml_type, name)?;
+        let n: usize = shape.iter().product();
+        let mut data = vec![0.0f32; n];
+        bfi_gguf::dequant_tensor(ty, bytes, &mut data).with_context(|| format!("dequant {name}"))?;
+        return backend.upload_f32(&shape, &data);
+    }
+    let dtype = DType::from_ggml(ggml_type)
+        .ok_or_else(|| anyhow!("unsupported ggml type {ggml_type} for tensor {name}"))?;
+    backend.upload_quant(&shape, dtype, bytes)
 }
 
 fn last_row(x: &Tensor) -> anyhow::Result<Tensor> {
