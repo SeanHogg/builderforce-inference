@@ -513,7 +513,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bf-cloud"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "bf-vault",
@@ -524,7 +524,7 @@ dependencies = [
 
 [[package]]
 name = "bf-context"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "bf-index",
@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "bf-index"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "blake3",
@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "bf-local"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "bf-cloud",
@@ -581,7 +581,7 @@ dependencies = [
 
 [[package]]
 name = "bf-mcp"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "bf-vault",
@@ -592,7 +592,7 @@ dependencies = [
 
 [[package]]
 name = "bf-memory"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "bf-mcp",
@@ -602,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "bf-teach"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "enigo",
@@ -618,7 +618,7 @@ dependencies = [
 
 [[package]]
 name = "bf-vault"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "keyring",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "bfi"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "bfi-core",
@@ -646,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-core"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "bfi-gguf",
@@ -663,7 +663,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-gguf"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "half",
@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-models"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "bfi-core",
@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-runtime"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "bfi-core",
@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-server"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "axum",
@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-web"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "bfi-core",
@@ -7270,7 +7270,7 @@ dependencies = [
 
 [[package]]
 name = "synapse"
-version = "2026.10.9"
+version = "2026.10.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

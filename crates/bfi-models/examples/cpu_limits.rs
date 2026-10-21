@@ -6,12 +6,12 @@
 //!   cargo run -q -p bfi-models --example cpu_limits
 
 use bfi_models::kv_plan::{
-    ASSUMED_DEVICE_MEMORY_BYTES, CPU_WORKING_SET_BYTES, DEFAULT_CPU_KV_BUDGET_BYTES,
-    DEVICE_MEMORY_SHARE_DIVISOR, WASM32_MEMORY_BYTES,
+    ASSUMED_DESKTOP_MEMORY_BYTES, ASSUMED_DEVICE_MEMORY_BYTES, CPU_WORKING_SET_BYTES,
+    DEFAULT_CPU_KV_BUDGET_BYTES, DEVICE_MEMORY_SHARE_DIVISOR, WASM32_MEMORY_BYTES,
 };
 
 fn main() {
     println!(
-        "{{\"cpuKvBudgetBytes\":{DEFAULT_CPU_KV_BUDGET_BYTES},\"cpuWorkingSetBytes\":{CPU_WORKING_SET_BYTES},\"wasm32MemoryBytes\":{WASM32_MEMORY_BYTES},\"deviceMemoryShareDivisor\":{DEVICE_MEMORY_SHARE_DIVISOR},\"assumedDeviceMemoryBytes\":{ASSUMED_DEVICE_MEMORY_BYTES}}}"
+        "{{\"cpuKvBudgetBytes\":{DEFAULT_CPU_KV_BUDGET_BYTES},\"cpuWorkingSetBytes\":{CPU_WORKING_SET_BYTES},\"wasm32MemoryBytes\":{WASM32_MEMORY_BYTES},\"deviceMemoryShareDivisor\":{DEVICE_MEMORY_SHARE_DIVISOR},\"assumedDeviceMemoryBytes\":{ASSUMED_DEVICE_MEMORY_BYTES},\"assumedDesktopMemoryBytes\":{ASSUMED_DESKTOP_MEMORY_BYTES}}}"
     );
 }

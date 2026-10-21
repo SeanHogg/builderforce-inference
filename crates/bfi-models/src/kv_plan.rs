@@ -87,6 +87,12 @@ pub const DEVICE_MEMORY_SHARE_DIVISOR: u64 = 2;
 /// The RAM assumed where the host cannot read it (no `navigator.deviceMemory`: Safari,
 /// Firefox, iOS) — conservative, so a phone is never offered a model it cannot hold.
 pub const ASSUMED_DEVICE_MEMORY_BYTES: u64 = 2 << 30;
+/// The RAM a HOST assumes for an unreported DESKTOP (Firefox and Safari on a desktop
+/// report no `navigator.deviceMemory`): half of it is wasm32's 4 GiB cap, so a desktop
+/// is not held to a phone's budget. The host decides mobile vs desktop (it can read the
+/// user agent); the wasm's own `support()` keeps the conservative
+/// [`ASSUMED_DEVICE_MEMORY_BYTES`].
+pub const ASSUMED_DESKTOP_MEMORY_BYTES: u64 = 8 << 30;
 
 /// The memory the CPU backend may plan to use here: wasm32's ceiling, or the device's
 /// share ([`DEVICE_MEMORY_SHARE_DIVISOR`]) when that is smaller — with
@@ -226,6 +232,8 @@ mod tests {
         assert_eq!(cpu_memory_ceiling(Some(0)), 1 << 30);
         assert_eq!(cpu_memory_ceiling(Some(8 << 30)), 4 << 30);
         assert_eq!(cpu_memory_ceiling(Some(32 << 30)), WASM32_MEMORY_BYTES);
+        // The desktop assumption is exactly the size whose share is wasm32's cap.
+        assert_eq!(cpu_memory_ceiling(Some(ASSUMED_DESKTOP_MEMORY_BYTES)), WASM32_MEMORY_BYTES);
         // Bonsai 1.7B fits the conservative default; 4B needs a device that says more.
         let b = DEFAULT_CPU_KV_BUDGET_BYTES;
         assert!(cpu_memory_bytes(248_302_272, &B17, cpu_served_context(&B17, b)) <= cpu_memory_ceiling(None));
