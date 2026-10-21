@@ -6,7 +6,7 @@
 //! and thread count of this build, the KV budget and memory ceiling the CPU backend
 //! loads under, and `navigator.deviceMemory` when the browser reports it).
 
-use bfi_models::kv_plan::{DEFAULT_CPU_KV_BUDGET_BYTES, WASM32_MEMORY_BYTES, WEBGPU_MIN_BINDING_BYTES};
+use bfi_models::kv_plan::{cpu_memory_ceiling, DEFAULT_CPU_KV_BUDGET_BYTES, WEBGPU_MIN_BINDING_BYTES};
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 
@@ -29,7 +29,8 @@ pub struct AdapterInfo {
 pub struct CpuInfo {
     /// Built with wasm SIMD128 (`.cargo/config.toml`).
     pub simd: bool,
-    /// Worker threads the kernels use. 1: this build is single-threaded (see README).
+    /// Threads the kernels run on: the rayon pool `initThreads` started in the threaded
+    /// artifact, else 1.
     pub threads: u32,
     /// `navigator.deviceMemory` in bytes, when the browser reports it (Chromium; capped
     /// at 8 GiB by the spec). Hosts weigh a CPU model against it.
@@ -74,7 +75,12 @@ impl CpuInfo {
             ("simd", JsValue::from_bool(self.simd)),
             ("threads", JsValue::from_f64(self.threads as f64)),
             ("kvBudgetBytes", JsValue::from_f64(DEFAULT_CPU_KV_BUDGET_BYTES as f64)),
-            ("maxMemoryBytes", JsValue::from_f64(WASM32_MEMORY_BYTES as f64)),
+            // What the browser will actually grant: wasm32's cap, or half the device's
+            // RAM (an unreported RAM reads as 2 GiB) — `kv_plan::cpu_memory_ceiling`.
+            (
+                "maxMemoryBytes",
+                JsValue::from_f64(cpu_memory_ceiling(self.device_memory_bytes.map(|b| b as u64)) as f64),
+            ),
         ];
         if let Some(m) = self.device_memory_bytes {
             pairs.push(("deviceMemoryBytes", JsValue::from_f64(m)));
@@ -124,12 +130,15 @@ fn probe_cpu() -> CpuInfo {
         .map(|gb| gb * (1u64 << 30) as f64);
     CpuInfo {
         simd: cfg!(target_feature = "simd128"),
-        threads: 1,
+        threads: crate::threads::count(),
         device_memory_bytes,
     }
 }
 
 pub async fn probe_webgpu() -> AdapterInfo {
+    if !cfg!(feature = "webgpu") {
+        return AdapterInfo::unsupported("this bfi-web build is CPU-only (the threaded artifact)");
+    }
     let global = js_sys::global();
     let navigator = js::get(&global, "navigator");
     if !js::present(&navigator) {

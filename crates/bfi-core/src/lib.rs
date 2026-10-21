@@ -28,6 +28,7 @@ pub use dtype::DType;
 pub use error::CoreError;
 pub use fused_gemv::{fused_gemv_pq2_0, fused_gemv_ptq1_0, fused_gemv_q1_0, max_rel_err};
 pub use gpu::GpuBackend;
+pub use par::with_sequential;
 pub use tensor::{Storage, Tensor};
 
 /// Whether a run demands a real GPU (`BFI_REQUIRE_GPU` set). GPU tests skip silently when

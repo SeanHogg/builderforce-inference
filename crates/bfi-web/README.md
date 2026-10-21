@@ -77,9 +77,27 @@ promptly — host it in a Worker to keep a page responsive.
   SIMD128 paths (`bfi-core/src/simd.rs`), proven bit-identical to lane-order
   scalar twins and within float rounding of the sequential reference
   (`wasm-pack test --node crates/bfi-core`).
-- **Threads**: single-threaded (`threads: 1`). `wasm-bindgen-rayon` needs
-  `-C target-feature=+atomics,+bulk-memory` and `-Z build-std` — a nightly
-  toolchain — plus a cross-origin-isolated page; this build stays on stable.
+- **Threads**: the default artifact is single-threaded (`threads: 1`). A
+  SECOND, optional artifact runs the CPU kernels on rayon over
+  wasm-bindgen-rayon's Web Worker pool:
+
+  ```sh
+  node crates/bfi-web/build-threads.mjs       # → crates/bfi-web/pkg-threads/
+  node crates/bfi-web/thread-check/run.mjs    # headless-Chrome proof (COOP/COEP)
+  ```
+
+  It is built on the PINNED `nightly-2026-10-15` (`build-threads.mjs`: atomics +
+  bulk-memory + mutable-globals + SIMD128, `-Z build-std=panic_abort,std`,
+  `--no-default-features --features threads`); native builds and the default
+  artifact stay on stable — there is no repo-wide `rust-toolchain.toml`. It is
+  CPU-only (wgpu's wasm types are not `Send` with atomics), needs a
+  cross-origin-isolated page (`SharedArrayBuffer`), and is served as plain files
+  (`wasm-bindgen-rayon`'s `no-bundler` mode: the pool's helpers load the glue by
+  URL). Call `initThreads(n)` (inside a worker) before `BfiEngine.create`; then
+  `support().backends.cpu.threads` reports `n`. `threadCheck(rows)` is the
+  shipped self-check: a Q1_0 matmul on the pool bit-compared with one thread.
+  Not in Node: the pool spawns Web Workers, which Node's `worker_threads` does
+  not provide as a `Worker` global.
 - **Memory**: weights stay packed in wasm memory; the KV cache is f32,
   budgeted at `kvBudgetBytes` (default 512 MiB → Bonsai 1.7B 2 304 tokens,
   4B / 8B 1 792). wasm32 stops at 4 GiB: when weights + KV + a 256 MiB working

@@ -36,8 +36,10 @@ parking_lot.workspace = true
 cubecl = { workspace = true, optional = true }
 wgpu = { version = "29", optional = true, default-features = false }
 
-# Threads are native-only; `src/par.rs` runs the same kernels sequentially on wasm32.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Threads: rayon natively, and on wasm32 only in the THREADED browser build (atomics +
+# shared memory, `crates/bfi-web/build-threads.mjs`, workers from wasm-bindgen-rayon).
+# The default wasm32 build has no threads; `src/par.rs` runs the same kernels sequentially.
+[target.'cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))'.dependencies]
 rayon.workspace = true
 
 # cubecl-common → rand 0.10 → getrandom 0.4, which refuses wasm32-unknown-unknown

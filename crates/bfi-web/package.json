@@ -1,6 +1,6 @@
 {
   "name": "@seanhogg/bfi-web",
-  "version": "2026.10.4",
+  "version": "2026.10.9",
   "description": "bfi in the browser: 1-bit Bonsai (GGUF Q1_0) on WebGPU, or on the CPU (wasm SIMD128) without a GPU. The BfiEngine class from Builderforce spec 34 §3.1.",
   "license": "MIT",
   "repository": {
@@ -24,11 +24,17 @@
     "pkg/bfi_web.d.ts",
     "pkg/bfi_web_bg.wasm",
     "pkg/bfi_web_bg.wasm.d.ts",
+    "pkg-threads/bfi_web.js",
+    "pkg-threads/bfi_web.d.ts",
+    "pkg-threads/bfi_web_bg.wasm",
+    "pkg-threads/snippets",
     "README.md"
   ],
   "sideEffects": false,
   "keywords": ["webgpu", "wasm", "llm", "gguf", "bonsai", "inference"],
   "scripts": {
-    "build": "wasm-pack build . --target web --release --out-dir pkg"
+    "build": "wasm-pack build . --target web --release --out-dir pkg",
+    "build:threads": "node build-threads.mjs",
+    "check:threads": "node thread-check/run.mjs"
   }
 }

@@ -3,6 +3,7 @@
 
 use std::fmt::Display;
 
+#[cfg(feature = "webgpu")]
 use bfi_core::resident::ResidentError;
 use bfi_gguf::GgufError;
 use wasm_bindgen::JsValue;
@@ -71,6 +72,7 @@ fn strip_prefix<'a>(kind: Kind, msg: &'a str) -> &'a str {
 /// Classify an engine error, falling back to `default`.
 pub fn classify(default: Kind, e: &anyhow::Error) -> JsValue {
     for cause in e.chain() {
+        #[cfg(feature = "webgpu")]
         if let Some(r) = cause.downcast_ref::<ResidentError>() {
             if matches!(r, ResidentError::UnsupportedType { .. } | ResidentError::DeviceLost(_)) {
                 return gpu_error(default, r);
@@ -87,6 +89,7 @@ pub fn classify(default: Kind, e: &anyhow::Error) -> JsValue {
     error(default, msg)
 }
 
+#[cfg(feature = "webgpu")]
 /// A resident-GPU error: a lost device is `webgpu_unavailable:`, an
 /// unsupported tensor type `unsupported_type:`, anything else `default`.
 pub fn gpu_error(default: Kind, e: &ResidentError) -> JsValue {

@@ -513,7 +513,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bf-cloud"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "bf-vault",
@@ -524,7 +524,7 @@ dependencies = [
 
 [[package]]
 name = "bf-context"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "bf-index",
@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "bf-index"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "blake3",
@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "bf-local"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "bf-cloud",
@@ -581,7 +581,7 @@ dependencies = [
 
 [[package]]
 name = "bf-mcp"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "bf-vault",
@@ -592,7 +592,7 @@ dependencies = [
 
 [[package]]
 name = "bf-memory"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "bf-mcp",
@@ -602,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "bf-teach"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "enigo",
@@ -618,7 +618,7 @@ dependencies = [
 
 [[package]]
 name = "bf-vault"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "keyring",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "bfi"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "bfi-core",
@@ -646,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-core"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "bfi-gguf",
@@ -663,7 +663,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-gguf"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "half",
@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-models"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "bfi-core",
@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-runtime"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "bfi-core",
@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-server"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "axum",
@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-web"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "bfi-core",
@@ -731,9 +731,11 @@ dependencies = [
  "bfi-runtime",
  "console_error_panic_hook",
  "js-sys",
+ "rayon",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-bindgen-rayon",
 ]
 
 [[package]]
@@ -6234,6 +6236,7 @@ checksum = "fb39b166781f92d482534ef4b4b1b2568f42613b53e5b6c160e24cfbfa30926d"
 dependencies = [
  "either",
  "rayon-core",
+ "wasm_sync",
 ]
 
 [[package]]
@@ -6255,6 +6258,7 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+ "wasm_sync",
 ]
 
 [[package]]
@@ -7266,7 +7270,7 @@ dependencies = [
 
 [[package]]
 name = "synapse"
-version = "2026.10.8"
+version = "2026.10.9"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -8659,6 +8663,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-bindgen-rayon"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a16c60a56c81e4dc3b9c43d76ba5633e1c0278211d59a9cb07d61b6cd1c6583"
+dependencies = [
+ "crossbeam-channel",
+ "js-sys",
+ "rayon",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "wasm-bindgen-shared"
 version = "0.2.129"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8729,6 +8745,17 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "wasm_sync"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cff360cade7fec41ff0e9d2cda57fe58258c5f16def0e21302394659e6bbb0ea"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
  "web-sys",
 ]
 

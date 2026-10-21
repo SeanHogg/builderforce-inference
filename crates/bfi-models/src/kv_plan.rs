@@ -81,6 +81,22 @@ pub const WASM32_MEMORY_BYTES: u64 = 4 << 30;
 /// Headroom kept for activations, the tokenizer, the one tensor being streamed in and
 /// allocator slack, on top of weights + KV.
 pub const CPU_WORKING_SET_BYTES: u64 = 256 << 20;
+/// The share of the device's RAM the CPU backend plans to use: a browser tab never gets
+/// the whole machine, so a model is offered only when it fits half of it.
+pub const DEVICE_MEMORY_SHARE_DIVISOR: u64 = 2;
+/// The RAM assumed where the host cannot read it (no `navigator.deviceMemory`: Safari,
+/// Firefox, iOS) — conservative, so a phone is never offered a model it cannot hold.
+pub const ASSUMED_DEVICE_MEMORY_BYTES: u64 = 2 << 30;
+
+/// The memory the CPU backend may plan to use here: wasm32's ceiling, or the device's
+/// share ([`DEVICE_MEMORY_SHARE_DIVISOR`]) when that is smaller — with
+/// [`ASSUMED_DEVICE_MEMORY_BYTES`] standing in for a RAM nobody reports. The ONE rule;
+/// `BfiEngine.support()` reports it and `packages/local-inference`'s fit reads the same
+/// constants (generated from this file at vendor time).
+pub fn cpu_memory_ceiling(device_memory_bytes: Option<u64>) -> u64 {
+    let device = device_memory_bytes.filter(|b| *b > 0).unwrap_or(ASSUMED_DEVICE_MEMORY_BYTES);
+    WASM32_MEMORY_BYTES.min(device / DEVICE_MEMORY_SHARE_DIVISOR)
+}
 
 /// The context the CPU backend serves: f32 KV (no per-buffer cap — host memory has no
 /// storage-binding limit) under `kv_budget_bytes`, never above the trained context.
@@ -202,6 +218,18 @@ mod tests {
         // A budget past the ceiling is what `load` refuses.
         let huge = cpu_served_context(&B8, 8 << 30);
         assert!(cpu_memory_bytes(1_158_654_496, &B8, huge) > WASM32_MEMORY_BYTES);
+    }
+
+    #[test]
+    fn cpu_memory_ceiling_is_half_the_device_capped_at_wasm32() {
+        assert_eq!(cpu_memory_ceiling(None), 1 << 30);
+        assert_eq!(cpu_memory_ceiling(Some(0)), 1 << 30);
+        assert_eq!(cpu_memory_ceiling(Some(8 << 30)), 4 << 30);
+        assert_eq!(cpu_memory_ceiling(Some(32 << 30)), WASM32_MEMORY_BYTES);
+        // Bonsai 1.7B fits the conservative default; 4B needs a device that says more.
+        let b = DEFAULT_CPU_KV_BUDGET_BYTES;
+        assert!(cpu_memory_bytes(248_302_272, &B17, cpu_served_context(&B17, b)) <= cpu_memory_ceiling(None));
+        assert!(cpu_memory_bytes(572_270_624, &B4, cpu_served_context(&B4, b)) > cpu_memory_ceiling(None));
     }
 
     #[test]

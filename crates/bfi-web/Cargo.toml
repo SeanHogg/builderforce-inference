@@ -9,13 +9,28 @@ repository.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["webgpu"]
+# The WebGPU backend (CubeCL / wgpu). The default artifact carries it and the CPU
+# backend; the THREADED artifact is CPU-only (wgpu's wasm types are not Send/Sync
+# once atomics are on).
+webgpu = ["bfi-core/webgpu", "bfi-models/webgpu"]
+# The THREADED CPU artifact: rayon over wasm-bindgen-rayon's Web Worker pool. Needs the
+# pinned nightly + `-Z build-std` + atomics — build it with `node build-threads.mjs`.
+threads = ["dep:wasm-bindgen-rayon", "dep:rayon"]
+
 # Every dependency is wasm32-only. Natively this crate is empty, so building the
 # workspace never unifies bfi-core's `webgpu` feature into the native `bfi`
-# binary (cuda / rocm / metal / vulkan builds stay exactly as they were).
+# binary (features on a target-specific dependency are not activated for other
+# targets; cuda / rocm / metal / vulkan builds stay exactly as they were).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 bfi-gguf = { path = "../bfi-gguf" }
-bfi-core = { path = "../bfi-core", features = ["webgpu"] }
-bfi-models = { path = "../bfi-models", features = ["webgpu"] }
+bfi-core = { path = "../bfi-core" }
+bfi-models = { path = "../bfi-models" }
+# `no-bundler`: the threaded artifact is served as plain files (hosts copy it, never
+# bundle it), so the pool's helper worker finds the glue by URL, not `../../..`.
+wasm-bindgen-rayon = { version = "1.3", optional = true, features = ["no-bundler"] }
+rayon = { workspace = true, optional = true }
 bfi-runtime = { path = "../bfi-runtime" }
 anyhow.workspace = true
 serde_json.workspace = true

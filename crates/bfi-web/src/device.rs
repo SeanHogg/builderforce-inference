@@ -6,13 +6,16 @@
 //!   `CpuBackend` — the native `bfi`'s kernels in wasm memory, SIMD128.
 //! - `auto` (default): WebGPU when an adapter exists, else CPU.
 
+#[cfg(feature = "webgpu")]
 use bfi_core::resident::{open_webgpu, Gpu};
 use js_sys::Object;
 use wasm_bindgen::JsValue;
 
 use crate::errors::{error, Kind};
 use crate::js;
-use crate::support::{self, AdapterInfo};
+use crate::support;
+#[cfg(feature = "webgpu")]
+use crate::support::AdapterInfo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendChoice {
@@ -43,6 +46,7 @@ impl BackendChoice {
 /// The backend an engine owns (a clone shares the same GPU device).
 #[derive(Clone)]
 pub enum Device {
+    #[cfg(feature = "webgpu")]
     Gpu { gpu: Gpu, adapter: AdapterInfo },
     Cpu,
 }
@@ -62,14 +66,20 @@ impl Device {
                 adapter.reason.clone().unwrap_or_else(|| "no adapter".into()),
             ));
         }
-        // CubeCL awaits requestAdapter/requestDevice itself (wasm cannot block).
-        let gpu = open_webgpu().await;
-        Ok(Self::Gpu { gpu, adapter })
+        #[cfg(feature = "webgpu")]
+        {
+            // CubeCL awaits requestAdapter/requestDevice itself (wasm cannot block).
+            let gpu = open_webgpu().await;
+            Ok(Self::Gpu { gpu, adapter })
+        }
+        #[cfg(not(feature = "webgpu"))]
+        unreachable!("probe_webgpu reports unsupported in a build without WebGPU")
     }
 
     /// `"webgpu"` or `"cpu"` — `BfiModelInfo.backend` and `BfiEngine.backend`.
     pub fn name(&self) -> &'static str {
         match self {
+            #[cfg(feature = "webgpu")]
             Self::Gpu { .. } => "webgpu",
             Self::Cpu => "cpu",
         }
@@ -78,6 +88,7 @@ impl Device {
     /// Why the device is gone (a lost GPU); a CPU is never lost.
     pub fn lost(&self) -> Option<String> {
         match self {
+            #[cfg(feature = "webgpu")]
             Self::Gpu { gpu, .. } => gpu.lost(),
             Self::Cpu => None,
         }
@@ -86,6 +97,7 @@ impl Device {
     /// Return freed GPU buffers to the device; nothing to do on the CPU (dropping the
     /// model frees its wasm memory for reuse).
     pub fn release_unused(&self) {
+        #[cfg(feature = "webgpu")]
         if let Self::Gpu { gpu, .. } = self {
             gpu.release_unused();
         }

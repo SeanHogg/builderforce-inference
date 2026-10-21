@@ -103,6 +103,7 @@ pub async fn load(
     opts: LoadOptions,
 ) -> Result<Loaded, JsValue> {
     match device {
+        #[cfg(feature = "webgpu")]
         Device::Gpu { gpu, adapter } => {
             crate::load_gpu::load(gpu, adapter, chunks, total_bytes, on_progress, opts).await
         }

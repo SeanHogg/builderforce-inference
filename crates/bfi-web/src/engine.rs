@@ -53,7 +53,8 @@ export interface BfiCpuSupport {
   threads: number;
   /** The CPU backend's default KV budget. */
   kvBudgetBytes: number;
-  /** wasm32's memory ceiling: weights + KV + working set must fit under it. */
+  /** The memory the CPU backend may plan to use: min(wasm32's 4 GiB, half the device's
+   *  RAM; an unreported RAM reads as 2 GiB). Weights + KV + working set must fit. */
   maxMemoryBytes: number;
   /** `navigator.deviceMemory` in bytes, where the browser reports it. */
   deviceMemoryBytes?: number

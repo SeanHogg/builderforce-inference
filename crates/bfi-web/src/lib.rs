@@ -27,7 +27,7 @@ mod errors;
 mod js;
 #[cfg(target_arch = "wasm32")]
 mod load_cpu;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 mod load_gpu;
 #[cfg(target_arch = "wasm32")]
 mod loader;
@@ -39,6 +39,10 @@ mod runner;
 mod stream;
 #[cfg(target_arch = "wasm32")]
 mod support;
+#[cfg(target_arch = "wasm32")]
+mod threads;
 
 #[cfg(target_arch = "wasm32")]
 pub use engine::BfiEngine;
+#[cfg(all(target_arch = "wasm32", feature = "threads"))]
+pub use threads::{init_threads, thread_check};
