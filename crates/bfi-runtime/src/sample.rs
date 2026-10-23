@@ -290,10 +290,42 @@ fn json_object_prefix_ok(s: &str) -> bool {
     in_string || escape || depth > 0
 }
 
+/// What [`sample`] draws from after penalties, temperature and top-k/p/min-p: a forced
+/// token (greedy, or a filter that left nothing) or `(id, weight)` pairs whose weights
+/// need not sum to 1. Speculative verification judges a drafted token against exactly
+/// this distribution, so the two can never disagree about what "the target" is.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Target {
+    Token(u32),
+    Weights(Vec<(u32, f32)>),
+}
+
 /// Sample a token id from `logits`. Greedy when `temperature == 0`.
 pub fn sample(logits: &[f32], prev: &[u32], p: &SampleParams) -> u32 {
+    match target(logits, prev, p) {
+        Target::Token(id) => id,
+        Target::Weights(vals) => draw(&vals, Rng(p.seed).f32()),
+    }
+}
+
+/// Inverse-CDF pick from `(id, weight)` pairs at `u ∈ [0, 1)`.
+pub(crate) fn draw(vals: &[(u32, f32)], u: f32) -> u32 {
+    let sum: f32 = vals.iter().map(|(_, pr)| *pr).sum();
+    let r = u * sum.max(0.0);
+    let mut cum = 0.0f32;
+    for (id, prob) in vals {
+        cum += *prob;
+        if r <= cum {
+            return *id;
+        }
+    }
+    vals.last().map(|(id, _)| *id).unwrap_or(0)
+}
+
+/// The distribution [`sample`] draws from (see [`Target`]).
+pub(crate) fn target(logits: &[f32], prev: &[u32], p: &SampleParams) -> Target {
     if logits.is_empty() {
-        return 0;
+        return Target::Token(0);
     }
 
     let mut masked: Vec<f32> = logits.to_vec();
@@ -335,7 +367,7 @@ pub fn sample(logits: &[f32], prev: &[u32], p: &SampleParams) -> u32 {
     }
 
     if p.temperature <= 0.0 {
-        return argmax(&vals);
+        return Target::Token(argmax(&vals));
     }
 
     for (_, logit) in vals.iter_mut() {
@@ -381,27 +413,17 @@ pub fn sample(logits: &[f32], prev: &[u32], p: &SampleParams) -> u32 {
         let thresh = p.min_p * max_p;
         vals.retain(|(_, pr)| *pr >= thresh);
         if vals.is_empty() {
-            return argmax(
+            return Target::Token(argmax(
                 &logits
                     .iter()
                     .enumerate()
                     .map(|(i, &v)| (i as u32, v))
                     .collect::<Vec<_>>(),
-            );
+            ));
         }
     }
 
-    let sum: f32 = vals.iter().map(|(_, pr)| *pr).sum();
-    let mut rng = Rng(p.seed);
-    let r = rng.f32() * sum.max(0.0);
-    let mut cum = 0.0f32;
-    for (id, prob) in &vals {
-        cum += *prob;
-        if r <= cum {
-            return *id;
-        }
-    }
-    vals.last().map(|(id, _)| *id).unwrap_or(0)
+    Target::Weights(vals)
 }
 
 fn argmax(vals: &[(u32, f32)]) -> u32 {
@@ -417,7 +439,7 @@ fn argmax(vals: &[(u32, f32)]) -> u32 {
 }
 
 /// xorshift64* — no extra rand crate.
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
     fn next_u64(&mut self) -> u64 {
@@ -432,7 +454,7 @@ impl Rng {
         x
     }
 
-    fn f32(&mut self) -> f32 {
+    pub(crate) fn f32(&mut self) -> f32 {
         (self.next_u64() >> 40) as f32 / ((1u32 << 24) as f32)
     }
 }

@@ -1,5 +1,5 @@
-//! Chunking — a source file becomes definition-sized chunks, a symbol list and the set of
-//! identifiers it references.
+//! Chunking — a source file becomes definition-sized chunks, a symbol list, the set of
+//! identifiers it references and the terms of its import statements.
 //!
 //! A chunk is one function / class / type (the unit an agent actually wants to read), not
 //! a fixed window, so a search hit is ~20-80 relevant lines instead of a 4k-token window.
@@ -46,6 +46,10 @@ pub struct FileChunks {
     pub chunks: Vec<Chunk>,
     pub symbols: Vec<Symbol>,
     pub identifiers: BTreeSet<String>,
+    /// Lowercased identifier terms of the file's import / use statements
+    /// (`import { A } from './lib/a'` → `a`, `lib`, …). The repo-map graph matches them
+    /// against file stems and directory names to resolve a name defined in several files.
+    pub imports: BTreeSet<String>,
 }
 
 pub fn chunk_file(path: &Path, source: &str) -> FileChunks {
@@ -69,7 +73,7 @@ fn chunk_tree(root: Node, source: &str, lines: &[&str], spec: &'static LangSpec)
     let mut covered = vec![false; lines.len() + 2];
     let mut walker = Walker { source, lines, spec, out: &mut out, covered: &mut covered };
     walker.visit_children(root, None);
-    collect_identifiers(root, source, spec, &mut out.identifiers);
+    collect_identifiers(root, source, spec, &mut out.identifiers, &mut out.imports);
 
     // Gaps: runs of uncovered, non-blank lines long enough to be worth a chunk.
     let mut gap_chunks = Vec::new();
@@ -112,6 +116,19 @@ impl Walker<'_> {
 
     fn visit(&mut self, node: Node, container: Option<&str>) {
         let kind = node.kind();
+        if self.spec.transparent_kinds.contains(&kind) {
+            // `namespace X { … }`: its definitions are top-level ones; descend into the
+            // block (one level) without making the namespace itself a symbol.
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if self.is_definition_like(child.kind()) {
+                    self.visit(child, container);
+                } else {
+                    self.visit_children(child, container);
+                }
+            }
+            return;
+        }
         if self.spec.wrapper_kinds.contains(&kind) {
             // The inner declaration names the definition; the chunk spans the wrapper so
             // decorators / `export` stay attached to the code they modify.
@@ -132,6 +149,12 @@ impl Walker<'_> {
         if container.is_some() && is_body_like(kind) {
             self.visit_children(node, container);
         }
+    }
+
+    fn is_definition_like(&self, kind: &str) -> bool {
+        self.spec.def_kinds.contains(&kind)
+            || self.spec.wrapper_kinds.contains(&kind)
+            || self.spec.transparent_kinds.contains(&kind)
     }
 
     fn definition(&mut self, span: Node, decl: Node, container: Option<&str>) {
@@ -207,7 +230,17 @@ impl Walker<'_> {
 fn is_body_like(kind: &str) -> bool {
     matches!(
         kind,
-        "class_body" | "declaration_list" | "block" | "interface_body" | "enum_body" | "field_declaration_list"
+        "class_body"
+            | "declaration_list"
+            | "block"
+            | "interface_body"
+            | "enum_body"
+            | "field_declaration_list"
+            // Ruby class / module bodies.
+            | "body_statement"
+            // Kotlin / Swift.
+            | "enum_class_body"
+            | "protocol_body"
     )
 }
 
@@ -225,6 +258,8 @@ fn definition_name(node: Node, source: &str) -> Option<String> {
             let first = node.named_children(&mut c).find(|n| n.kind() == "variable_declarator");
             first.and_then(|d| d.child_by_field_name("name")).and_then(text)
         }
+        // Kotlin `typealias Foo = …` names the alias in its `type` field.
+        "type_alias" => node.child_by_field_name("type").and_then(text),
         // Go `type Foo struct {…}` → first type_spec's name.
         "type_declaration" => {
             let mut c = node.walk();
@@ -244,7 +279,16 @@ fn signature_line(lines: &[&str], line: usize) -> String {
     sig
 }
 
-fn collect_identifiers(root: Node, source: &str, spec: &LangSpec, out: &mut BTreeSet<String>) {
+/// Longest import statement read for terms; anything longer is a generated blob.
+const MAX_IMPORT_CHARS: usize = 400;
+
+fn collect_identifiers(
+    root: Node,
+    source: &str,
+    spec: &LangSpec,
+    out: &mut BTreeSet<String>,
+    imports: &mut BTreeSet<String>,
+) {
     let mut cursor = root.walk();
     let mut descend = true;
     loop {
@@ -255,6 +299,13 @@ fn collect_identifiers(root: Node, source: &str, spec: &LangSpec, out: &mut BTre
                     if t.len() >= 3 {
                         out.insert(t.to_owned());
                     }
+                }
+            }
+            // `is_named`: Kotlin's statement node and its keyword token are both `import`.
+            if node.is_named() && spec.import_kinds.contains(&node.kind()) {
+                if let Ok(t) = node.utf8_text(source.as_bytes()) {
+                    let t = &t[..floor_char_boundary(t, MAX_IMPORT_CHARS)];
+                    imports.extend(terms::identifiers(t, 2).map(|w| w.to_ascii_lowercase()));
                 }
             }
             if cursor.goto_first_child() {
@@ -270,6 +321,17 @@ fn collect_identifiers(root: Node, source: &str, spec: &LangSpec, out: &mut BTre
         }
         descend = false;
     }
+}
+
+fn floor_char_boundary(s: &str, max: usize) -> usize {
+    if s.len() <= max {
+        return s.len();
+    }
+    let mut i = max;
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 fn window_chunks(lines: &[&str], start: usize, end: usize, symbol: Option<String>, kind: &str, out: &mut Vec<Chunk>) {
@@ -345,6 +407,71 @@ const helper = () => 1;
         let fc = chunk_file(Path::new("x.rs"), src);
         assert!(fc.symbols.iter().any(|s| s.name == "Foo" && s.kind == "impl_item"));
         assert!(fc.symbols.iter().any(|s| s.name == "bar" && s.container.as_deref() == Some("Foo")));
+    }
+
+    #[test]
+    fn import_terms_are_collected() {
+        let fc = chunk_file(Path::new("a.ts"), "import { Config } from './lib/config';\nexport const x = Config;\n");
+        assert!(fc.imports.contains("config"), "{:?}", fc.imports);
+        assert!(fc.imports.contains("lib"));
+        let rs = chunk_file(Path::new("m.rs"), "use crate::store::Store;\nfn f() {}\n");
+        assert!(rs.imports.contains("store"));
+    }
+
+    fn names(fc: &FileChunks) -> Vec<&str> {
+        fc.symbols.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    #[test]
+    fn csharp_namespace_is_walked_through() {
+        let src = "using App.Data;\nnamespace App.Services {\n  public class Billing {\n    public int Charge(int n) { return n; }\n  }\n}\n";
+        let fc = chunk_file(Path::new("Billing.cs"), src);
+        assert_eq!(fc.lang, Some("csharp"));
+        let n = names(&fc);
+        assert!(n.contains(&"Billing") && n.contains(&"Charge"), "{n:?}");
+        assert!(!n.iter().any(|s| s.contains("Services")), "namespace is not a symbol: {n:?}");
+        assert!(fc.imports.contains("data"));
+    }
+
+    #[test]
+    fn ruby_class_members_are_symbols() {
+        let src = "require_relative 'util'\nclass Invoice\n  def total\n    1\n  end\nend\ndef helper\nend\n";
+        let fc = chunk_file(Path::new("invoice.rb"), src);
+        assert_eq!(fc.lang, Some("ruby"));
+        let n = names(&fc);
+        assert!(n.contains(&"Invoice") && n.contains(&"total") && n.contains(&"helper"), "{n:?}");
+        let total = fc.symbols.iter().find(|s| s.name == "total").unwrap();
+        assert_eq!(total.container.as_deref(), Some("Invoice"));
+    }
+
+    #[test]
+    fn php_kotlin_swift_definitions() {
+        let php = chunk_file(
+            Path::new("a.php"),
+            "<?php\nuse App\\Models\\User;\nclass Repo {\n  public function find($id) { return $id; }\n}\nfunction top() {}\n",
+        );
+        assert_eq!(php.lang, Some("php"));
+        let n = names(&php);
+        assert!(n.contains(&"Repo") && n.contains(&"find") && n.contains(&"top"), "{n:?}");
+        assert!(php.imports.contains("models"));
+
+        let kt = chunk_file(
+            Path::new("a.kt"),
+            "import com.app.data.Store\nclass Cart {\n  fun add(x: Int): Int { return x }\n}\nfun main() {}\n",
+        );
+        assert_eq!(kt.lang, Some("kotlin"));
+        let n = names(&kt);
+        assert!(n.contains(&"Cart") && n.contains(&"add") && n.contains(&"main"), "{n:?}");
+        assert!(kt.imports.contains("store"));
+
+        let sw = chunk_file(
+            Path::new("a.swift"),
+            "import Foundation\nstruct Point {\n  func norm() -> Int { return 0 }\n}\nprotocol Shape {\n  func area() -> Int\n}\nfunc free() {}\n",
+        );
+        assert_eq!(sw.lang, Some("swift"));
+        let n = names(&sw);
+        assert!(n.contains(&"Point") && n.contains(&"norm") && n.contains(&"Shape") && n.contains(&"free"), "{n:?}");
+        assert!(sw.imports.contains("foundation"));
     }
 
     #[test]

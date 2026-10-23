@@ -29,7 +29,8 @@ GitHub Release binaries are not signed yet (owner signing secrets).
 | `crates/bfi` | CLI: `pull`, `run`, `serve`, `fit`, `ls`, `rm`, `ps`, `bench` |
 | `crates/bf-local` | Local models: catalog, hardware fit, OpenAI/Anthropic-compatible loopback API |
 | `crates/bf-context` | Loopback context service used by the Builderforce VS Code extension |
-| `crates/bf-index` | Code index (tree-sitter, BM25, local embeddings) |
+| `crates/bf-index` | Code index (tree-sitter, BM25, local embeddings, reference-ranked repo map) |
+| `crates/bf-compress` | LLMLingua-2 token-level prompt compression; code fences, paths and numbers are never touched (ONNX model behind the `compress` feature) |
 | `crates/bf-mcp` | MCP client/host for connectors |
 | `crates/bf-memory` | Evermind memory client |
 | `crates/bf-teach` | Teach-once UI recording for self-directed agents |
@@ -41,6 +42,40 @@ GitHub Release binaries are not signed yet (owner signing secrets).
 ```sh
 cargo build --workspace
 ```
+
+The default build has no ONNX Runtime and downloads no model. LLMLingua-2 compression is opt-in:
+
+```sh
+cargo build -p bf-context --features compress
+```
+
+### `bfi` engine options
+
+`bfi run`, `bfi serve` and `bfi bench` take the same engine flags. `bfi serve` also reads them from the environment, so the desktop app can set them on the sidecar:
+
+| Flag | Env (`bfi serve`) | What |
+|---|---|---|
+| `--spec-lookup` | `BFI_SPEC_LOOKUP=1\|true\|on` (`0\|false\|off` turns it off) | Prompt-lookup speculative decoding: draft tokens from n-gram matches in the context and verify them in one forward pass. Off by default. `bfi bench --spec-lookup` also times it against plain decode and reports the acceptance rate. |
+| `--draft-len N` | | Tokens drafted per verify pass with `--spec-lookup` (default 4). |
+| `--prefix-cache-mb N` | `BFI_PREFIX_CACHE_MB=N` | Prefix-cache budget in MiB: the cached K/V of earlier prompts, reused when a request shares their prefix (default 1024). |
+
+### `bf-context` commands
+
+```sh
+bf-context serve                         # run the service (what the desktop app does, minus the UI)
+bf-context mcp [--root <dir>]            # MCP stdio server for Claude Code / Cursor (default root: cwd)
+bf-context index <dir>                   # index a workspace once and print its status
+bf-context search <dir> <query>          # search a workspace and print the hits as JSON
+bf-context repo-map --root <dir> [--max-tokens N] [--focus <path>…] [--query <task>…]
+                                         # print the reference-ranked repo map
+bf-context compress [--rate R] < file    # LLMLingua-2 compress stdin to stdout (`compress` feature)
+```
+
+`repo-map` ranks files by how much the rest of the code depends on them (PageRank over the reference graph) and lists each file's most-referenced definitions with their signature lines, within the token budget (default 1500, max 8000). `--focus` paths and the files, file names and symbols named in `--query` personalize the ranking: they rank first and their neighbourhood next. The same options are on `POST /v1/repo-map` (`maxTokens`, `focus`, `query`) and the MCP `repo_map` tool.
+
+`compress` keeps the share `R` of prose tokens (default 0.5) that the LLMLingua-2 classifier marks as load-bearing, in their original order; fenced code, paths, URLs, inline code and numbers are copied verbatim. Token counts go to stderr, so the output pipes cleanly. The same operation is `POST /v1/compress` and the MCP `compress_context` tool, which is listed only when the binary is built with `--features compress`.
+
+The code index parses Rust, TypeScript, JavaScript, Python, Go, Java, C# (`.cs`), Ruby (`.rb`), PHP (`.php`), Kotlin (`.kt`, `.kts`) and Swift (`.swift`) with tree-sitter.
 
 ### Golden dequant (PRD §8 M2)
 

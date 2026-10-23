@@ -17,7 +17,10 @@ mod tokenize;
 mod tools;
 
 pub use chat::{apply_chat_template, chatml_prompt, render_prompt, render_template, ChatMessage};
-pub use engine::{mix_decode, run_queued, Engine, GreedyTrace, Logits, SeqState, StateLayout};
+pub use engine::{
+    mix_decode, run_queued, Engine, EngineOptions, GreedyTrace, Logits, SeqState, SpecLookup, SpecStats,
+    StateLayout, DEFAULT_PREFIX_CACHE_BYTES,
+};
 pub use fit::{fit, FitBreakdown, FitReport, FitShape, RUNTIME_OVERHEAD_BYTES};
 pub use sample::{apply_constraint, sample, SampleParams};
 #[cfg(not(target_arch = "wasm32"))]

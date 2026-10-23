@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 /// Builderforce native inference CLI.
 #[derive(Parser, Debug)]
@@ -10,6 +10,21 @@ use clap::{Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub cmd: Commands,
+}
+
+/// Engine options shared by every command that loads a model.
+#[derive(Args, Debug, Clone, Default)]
+pub struct EngineFlags {
+    /// Prompt-lookup speculative decoding: draft tokens from n-gram matches in the
+    /// context and verify them in one forward pass. Off by default.
+    #[arg(long)]
+    pub spec_lookup: bool,
+    /// Tokens drafted per verify pass with `--spec-lookup`.
+    #[arg(long, default_value_t = 4)]
+    pub draft_len: usize,
+    /// Prefix-cache budget in MiB (cached K/V of earlier prompts). Default 1024.
+    #[arg(long)]
+    pub prefix_cache_mb: Option<usize>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -25,6 +40,8 @@ pub enum Commands {
         model: String,
         /// Optional one-shot prompt (omit for a REPL).
         prompt: Option<String>,
+        #[command(flatten)]
+        engine: EngineFlags,
     },
     /// Start the HTTP server (OpenAI / Anthropic / Ollama dialects).
     Serve {
@@ -37,6 +54,8 @@ pub enum Commands {
         /// Model store directory (also set as `BFI_MODELS_DIR`).
         #[arg(long)]
         models_dir: Option<PathBuf>,
+        #[command(flatten)]
+        engine: EngineFlags,
     },
     /// Loaded models, device, VRAM/RAM, tok/s of the last request.
     Ps {
@@ -64,7 +83,9 @@ pub enum Commands {
     },
     /// List models in the store.
     Ls,
-    /// llama-bench metric names (`pp512`, `tg128`).
+    /// llama-bench metric names (`pp512`, `tg128`). With `--spec-lookup`, also times
+    /// generation with and without prompt-lookup speculative decoding on a prompt that
+    /// rewards copying, and reports both tok/s and the draft acceptance rate.
     Bench {
         /// Installed model name, path, or alias.
         model: String,
@@ -74,6 +95,8 @@ pub enum Commands {
         /// Token-generation count (metric `tg{N}`).
         #[arg(long, default_value_t = 128)]
         tg: usize,
+        #[command(flatten)]
+        engine: EngineFlags,
     },
     /// Time fused PQ2_0 / PTQ1_0 GEMV and project decode tok/s (PRD M1).
     BenchKernel {
@@ -174,10 +197,28 @@ mod tests {
                 port,
                 auth,
                 models_dir,
+                engine,
             } => {
                 assert_eq!(port, 9);
                 assert!(auth);
                 assert_eq!(models_dir.unwrap(), PathBuf::from("/tmp/m"));
+                assert!(!engine.spec_lookup, "speculative decoding is opt-in");
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse(&["bfi", "bench", "m", "--spec-lookup", "--draft-len", "6", "--prefix-cache-mb", "64"]).cmd {
+            Commands::Bench { engine, .. } => {
+                assert!(engine.spec_lookup);
+                assert_eq!(engine.draft_len, 6);
+                assert_eq!(engine.prefix_cache_mb, Some(64));
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse(&["bfi", "run", "m", "hi", "--spec-lookup"]).cmd {
+            Commands::Run { engine, prompt, .. } => {
+                assert!(engine.spec_lookup);
+                assert_eq!(engine.draft_len, 4);
+                assert_eq!(prompt.as_deref(), Some("hi"));
             }
             other => panic!("{other:?}"),
         }

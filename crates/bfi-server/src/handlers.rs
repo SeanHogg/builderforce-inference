@@ -1,6 +1,6 @@
 //! HTTP handlers. Generate paths return 503 when no engine is loaded.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use axum::extract::State;
 use axum::http::{header, StatusCode};
@@ -14,7 +14,7 @@ use bfi_runtime::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{AppState, Loaded};
+use crate::{AppState, Inner, Loaded};
 
 pub async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "engine": "bfi" }))
@@ -554,7 +554,7 @@ async fn generate_chat(
     let messages = messages.to_vec();
     tokio::task::spawn_blocking(move || {
         let mut slot = state.inner.engine.lock();
-        ensure_loaded(&mut slot, state.inner.model_path.as_deref(), &model)?;
+        ensure_loaded(&mut slot, &state.inner, &model)?;
         let loaded = slot.as_mut().ok_or(ApiError::NoModel)?;
         let prompt = render_prompt(loaded.engine.chat_template(), &messages);
         let text = loaded
@@ -577,7 +577,7 @@ async fn generate_raw(
     let model = model.to_string();
     tokio::task::spawn_blocking(move || {
         let mut slot = state.inner.engine.lock();
-        ensure_loaded(&mut slot, state.inner.model_path.as_deref(), &model)?;
+        ensure_loaded(&mut slot, &state.inner, &model)?;
         let loaded = slot.as_mut().ok_or(ApiError::NoModel)?;
         let text = loaded
             .engine
@@ -597,7 +597,7 @@ async fn embed_texts(
     let state = state.clone();
     tokio::task::spawn_blocking(move || {
         let mut slot = state.inner.engine.lock();
-        ensure_loaded(&mut slot, state.inner.model_path.as_deref(), &model)?;
+        ensure_loaded(&mut slot, &state.inner, &model)?;
         let loaded = slot.as_mut().ok_or(ApiError::NoModel)?;
         let mut vectors = Vec::with_capacity(texts.len());
         for t in &texts {
@@ -613,7 +613,8 @@ async fn embed_texts(
     .map_err(|e| ApiError::Generate(e.to_string()))?
 }
 
-fn ensure_loaded(slot: &mut Option<Loaded>, configured: Option<&Path>, model: &str) -> Result<(), ApiError> {
+fn ensure_loaded(slot: &mut Option<Loaded>, inner: &Inner, model: &str) -> Result<(), ApiError> {
+    let configured = inner.model_path.as_deref();
     if let Some(loaded) = slot.as_ref() {
         if configured.is_some() {
             return Ok(());
@@ -629,7 +630,7 @@ fn ensure_loaded(slot: &mut Option<Loaded>, configured: Option<&Path>, model: &s
         None => return Err(ApiError::NoModel),
     };
 
-    match Engine::load(&path) {
+    match Engine::load_with(&path, inner.engine_options.clone()) {
         Ok(engine) => {
             let name = if model.is_empty() {
                 path.file_stem()

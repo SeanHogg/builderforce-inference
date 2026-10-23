@@ -3,6 +3,7 @@
 //! every workspace after a restart without the client having to re-register it.
 
 use crate::activity::Activity;
+use crate::compressor::{CompressorState, LazyCompressor};
 use crate::embedder::{EmbedderState, LazyEmbedder};
 use crate::paths;
 use anyhow::{anyhow, Result};
@@ -24,6 +25,8 @@ pub struct Registry {
     workspaces: Mutex<BTreeMap<PathBuf, Entry>>,
     /// What outside clients asked of this service — see `api::dispatch_from`.
     pub activity: Activity,
+    /// LLMLingua-2 compression, loaded on first use (see `compressor`).
+    pub compressor: LazyCompressor,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -33,13 +36,25 @@ pub struct Health {
     pub embeddings: EmbedderState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embeddings_error: Option<String>,
+    /// `disabled` when built without the `compress` feature — clients advertise
+    /// compression only when this is not `disabled` / `unavailable`.
+    pub compress: CompressorState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compress_error: Option<String>,
     pub workspaces: usize,
 }
 
 impl Registry {
     pub fn new(data_dir: PathBuf) -> Arc<Self> {
         let embedder = LazyEmbedder::new(paths::model_cache(&data_dir));
-        Arc::new(Self { data_dir, embedder, workspaces: Mutex::new(BTreeMap::new()), activity: Activity::default() })
+        let compressor = LazyCompressor::new(paths::model_cache(&data_dir));
+        Arc::new(Self {
+            data_dir,
+            embedder,
+            workspaces: Mutex::new(BTreeMap::new()),
+            activity: Activity::default(),
+            compressor,
+        })
     }
 
     /// Warm the embedder and resume every persisted workspace, off the caller's thread.
@@ -60,6 +75,8 @@ impl Registry {
             version: env!("CARGO_PKG_VERSION"),
             embeddings: self.embedder.state(),
             embeddings_error: self.embedder.error(),
+            compress: self.compressor.state(),
+            compress_error: self.compressor.error(),
             workspaces: self.workspaces.lock().unwrap().len(),
         }
     }

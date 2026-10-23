@@ -8,6 +8,7 @@
 pub mod activity;
 pub mod api;
 pub mod client;
+pub mod compressor;
 pub mod discovery;
 pub mod embedder;
 pub mod mcp;

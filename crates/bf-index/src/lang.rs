@@ -20,6 +20,13 @@ pub struct LangSpec {
     pub wrapper_kinds: &'static [&'static str],
     /// Node kinds whose text is an identifier reference (feeds the repo-map ranking).
     pub ident_kinds: &'static [&'static str],
+    /// Namespace-like blocks walked THROUGH at top level (C# `namespace X { … }`): their
+    /// definitions are top-level definitions, the block itself is not a symbol.
+    pub transparent_kinds: &'static [&'static str],
+    /// Import / use / using statements. Their identifier terms say which files this one
+    /// depends on, so the repo-map graph can resolve a name defined in several files to
+    /// the one actually imported.
+    pub import_kinds: &'static [&'static str],
 }
 
 const TS_IDENTS: &[&str] = &[
@@ -46,6 +53,8 @@ static RUST: LangSpec = LangSpec {
     container_kinds: &["impl_item", "trait_item", "mod_item"],
     wrapper_kinds: &[],
     ident_kinds: &["identifier", "type_identifier", "field_identifier"],
+    transparent_kinds: &[],
+    import_kinds: &["use_declaration"],
 };
 
 // TypeScript and TSX share every table; only the grammar and the stored id differ.
@@ -68,6 +77,8 @@ const TYPESCRIPT_FIELDS: LangSpec = LangSpec {
     container_kinds: &["class_declaration", "abstract_class_declaration"],
     wrapper_kinds: &["export_statement"],
     ident_kinds: TS_IDENTS,
+    transparent_kinds: &[],
+    import_kinds: &["import_statement"],
 };
 
 static JAVASCRIPT: LangSpec = LangSpec {
@@ -82,6 +93,8 @@ static JAVASCRIPT: LangSpec = LangSpec {
     container_kinds: &["class_declaration"],
     wrapper_kinds: &["export_statement"],
     ident_kinds: TS_IDENTS,
+    transparent_kinds: &[],
+    import_kinds: &["import_statement"],
 };
 
 static PYTHON: LangSpec = LangSpec {
@@ -90,6 +103,8 @@ static PYTHON: LangSpec = LangSpec {
     container_kinds: &["class_definition"],
     wrapper_kinds: &["decorated_definition"],
     ident_kinds: &["identifier"],
+    transparent_kinds: &[],
+    import_kinds: &["import_statement", "import_from_statement"],
 };
 
 static GO: LangSpec = LangSpec {
@@ -98,6 +113,8 @@ static GO: LangSpec = LangSpec {
     container_kinds: &[],
     wrapper_kinds: &[],
     ident_kinds: &["identifier", "type_identifier", "field_identifier"],
+    transparent_kinds: &[],
+    import_kinds: &["import_declaration"],
 };
 
 static JAVA: LangSpec = LangSpec {
@@ -113,6 +130,84 @@ static JAVA: LangSpec = LangSpec {
     container_kinds: &["class_declaration", "interface_declaration", "enum_declaration", "record_declaration"],
     wrapper_kinds: &[],
     ident_kinds: &["identifier", "type_identifier"],
+    transparent_kinds: &[],
+    import_kinds: &["import_declaration"],
+};
+
+static CSHARP: LangSpec = LangSpec {
+    id: "csharp",
+    def_kinds: &[
+        "class_declaration",
+        "struct_declaration",
+        "interface_declaration",
+        "enum_declaration",
+        "record_declaration",
+        "delegate_declaration",
+        "method_declaration",
+        "constructor_declaration",
+        "property_declaration",
+    ],
+    container_kinds: &["class_declaration", "struct_declaration", "interface_declaration", "record_declaration"],
+    wrapper_kinds: &[],
+    ident_kinds: &["identifier"],
+    transparent_kinds: &["namespace_declaration"],
+    import_kinds: &["using_directive"],
+};
+
+static RUBY: LangSpec = LangSpec {
+    id: "ruby",
+    def_kinds: &["method", "singleton_method", "class", "module"],
+    container_kinds: &["class", "module"],
+    wrapper_kinds: &[],
+    ident_kinds: &["identifier", "constant"],
+    transparent_kinds: &[],
+    // `require_relative` is a plain method call in the grammar; Ruby resolves collisions
+    // by same-directory preference only.
+    import_kinds: &[],
+};
+
+static PHP: LangSpec = LangSpec {
+    id: "php",
+    def_kinds: &[
+        "function_definition",
+        "class_declaration",
+        "interface_declaration",
+        "trait_declaration",
+        "enum_declaration",
+        "method_declaration",
+    ],
+    container_kinds: &["class_declaration", "interface_declaration", "trait_declaration"],
+    wrapper_kinds: &[],
+    ident_kinds: &["name"],
+    transparent_kinds: &["namespace_definition"],
+    import_kinds: &["namespace_use_declaration"],
+};
+
+static KOTLIN: LangSpec = LangSpec {
+    id: "kotlin",
+    def_kinds: &["class_declaration", "object_declaration", "companion_object", "function_declaration", "type_alias"],
+    container_kinds: &["class_declaration", "object_declaration", "companion_object"],
+    wrapper_kinds: &[],
+    ident_kinds: &["identifier"],
+    transparent_kinds: &[],
+    import_kinds: &["import"],
+};
+
+static SWIFT: LangSpec = LangSpec {
+    id: "swift",
+    def_kinds: &[
+        "class_declaration",
+        "protocol_declaration",
+        "function_declaration",
+        "init_declaration",
+        "protocol_function_declaration",
+        "typealias_declaration",
+    ],
+    container_kinds: &["class_declaration", "protocol_declaration"],
+    wrapper_kinds: &[],
+    ident_kinds: &["simple_identifier", "type_identifier"],
+    transparent_kinds: &[],
+    import_kinds: &["import_declaration"],
 };
 
 /// The grammar and spec for a path, or `None` for a file chunked by line windows.
@@ -126,6 +221,11 @@ pub fn detect(path: &Path) -> Option<(Language, &'static LangSpec)> {
         "py" => (tree_sitter_python::LANGUAGE.into(), &PYTHON),
         "go" => (tree_sitter_go::LANGUAGE.into(), &GO),
         "java" => (tree_sitter_java::LANGUAGE.into(), &JAVA),
+        "cs" => (tree_sitter_c_sharp::LANGUAGE.into(), &CSHARP),
+        "rb" => (tree_sitter_ruby::LANGUAGE.into(), &RUBY),
+        "php" => (tree_sitter_php::LANGUAGE_PHP.into(), &PHP),
+        "kt" | "kts" => (tree_sitter_kotlin_ng::LANGUAGE.into(), &KOTLIN),
+        "swift" => (tree_sitter_swift::LANGUAGE.into(), &SWIFT),
         _ => return None,
     };
     Some(pair)
@@ -135,7 +235,7 @@ pub fn detect(path: &Path) -> Option<(Language, &'static LangSpec)> {
 pub fn is_plain_text_source(path: &Path) -> bool {
     const EXTS: &[&str] = &[
         "md", "mdx", "txt", "json", "jsonc", "yaml", "yml", "toml", "css", "scss", "html", "sql", "sh",
-        "ps1", "c", "h", "cc", "cpp", "hpp", "cs", "kt", "swift", "rb", "php", "vue", "svelte", "graphql",
+        "ps1", "c", "h", "cc", "cpp", "hpp", "vue", "svelte", "graphql",
         "proto", "tf", "dockerfile",
     ];
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();

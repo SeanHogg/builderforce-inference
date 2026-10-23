@@ -69,7 +69,7 @@ fn error_response(id: Value, code: i64, message: &str) -> Value {
 }
 
 fn tool_list() -> Value {
-    json!([
+    let mut tools = json!([
         {
             "name": "semantic_search",
             "description": "Find code in this repository by meaning or by name — ranks whole functions/classes by keyword match, identifier parts (resolveMembership matches 'membership') and local embeddings. Use it for 'where is X handled / how does Y work' before grepping or reading files.",
@@ -90,7 +90,8 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "maxTokens": { "type": "number", "description": "Budget (default 1500, max 8000)." },
-                    "focus": { "type": "array", "items": { "type": "string" }, "description": "Repo-relative paths to rank first." }
+                    "focus": { "type": "array", "items": { "type": "string" }, "description": "Repo-relative paths to rank first." },
+                    "query": { "type": "string", "description": "The task in hand. Files, file names and symbols it mentions rank first, with their neighbourhood next." }
                 }
             }
         },
@@ -108,7 +109,30 @@ fn tool_list() -> Value {
             "description": "Indexing progress for this repository: files, chunks, embedded chunks and phase.",
             "inputSchema": { "type": "object", "properties": {} }
         }
-    ])
+    ]);
+    if cfg!(feature = "compress") {
+        if let Some(list) = tools.as_array_mut() {
+            list.push(compress_tool());
+        }
+    }
+    tools
+}
+
+/// Listed only when the service is built with compression — never advertised as a stub.
+fn compress_tool() -> Value {
+    json!({
+        "name": "compress_context",
+        "description": "Shrink a large block of prose (logs, docs, transcripts, tool output) with LLMLingua-2: drops low-information words, keeps order. Fenced code blocks, file paths, URLs, inline code and numbers with units are never changed. Use it before carrying long non-code text forward; do not use it on code you will edit.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": { "type": "string", "description": "The text to compress." },
+                "rate": { "type": "number", "description": "Share of tokens to keep, 0..1 (default 0.5)." },
+                "forceKeep": { "type": "array", "items": { "type": "string" }, "description": "Words that must survive." }
+            },
+            "required": ["text"]
+        }
+    })
 }
 
 fn call_tool(client: &Client, root: &PathBuf, params: &Value) -> Value {
@@ -123,13 +147,20 @@ fn call_tool(client: &Client, root: &PathBuf, params: &Value) -> Value {
         "repo_map" => ops::REPO_MAP,
         "check_references" => ops::CHECK_REFERENCES,
         "index_status" => ops::STATUS,
+        "compress_context" => ops::COMPRESS,
         _ => return tool_error(&format!("unknown tool '{name}'")),
     };
     match client.call(op, args) {
         Ok(v) => {
-            // The map is prose for the model; everything else is structured JSON.
-            let text = match (name, v.get("map").and_then(Value::as_str)) {
-                ("repo_map", Some(map)) => map.to_string(),
+            // The map and compressed text are prose for the model; everything else is JSON.
+            let text = match name {
+                "repo_map" | "compress_context" => {
+                    let field = if name == "repo_map" { "map" } else { "text" };
+                    match v.get(field).and_then(Value::as_str) {
+                        Some(prose) => prose.to_string(),
+                        None => serde_json::to_string_pretty(&v).unwrap_or_default(),
+                    }
+                }
                 _ => serde_json::to_string_pretty(&v).unwrap_or_default(),
             };
             json!({ "content": [{ "type": "text", "text": text }], "isError": false })
@@ -140,4 +171,23 @@ fn call_tool(client: &Client, root: &PathBuf, params: &Value) -> Value {
 
 fn tool_error(msg: &str) -> Value {
     json!({ "content": [{ "type": "text", "text": msg }], "isError": true })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compress_tool_listed_only_when_built_in() {
+        let tools = tool_list();
+        let listed = tools.as_array().unwrap().iter().any(|t| t["name"] == "compress_context");
+        assert_eq!(listed, cfg!(feature = "compress"));
+    }
+
+    #[test]
+    fn repo_map_tool_takes_a_query() {
+        let tools = tool_list();
+        let repo_map = tools.as_array().unwrap().iter().find(|t| t["name"] == "repo_map").unwrap();
+        assert_eq!(repo_map["inputSchema"]["properties"]["query"]["type"], "string");
+    }
 }

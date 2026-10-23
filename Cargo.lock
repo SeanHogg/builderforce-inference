@@ -513,7 +513,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bf-cloud"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "bf-vault",
@@ -523,10 +523,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "bf-context"
-version = "2026.10.10"
+name = "bf-compress"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
+ "hex",
+ "ndarray",
+ "ort",
+ "sha2",
+ "tempfile",
+ "tokenizers",
+ "ureq",
+]
+
+[[package]]
+name = "bf-context"
+version = "2026.10.11"
+dependencies = [
+ "anyhow",
+ "bf-compress",
  "bf-index",
  "blake3",
  "dirs 5.0.1",
@@ -540,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "bf-index"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "blake3",
@@ -553,17 +568,22 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tree-sitter",
+ "tree-sitter-c-sharp",
  "tree-sitter-go",
  "tree-sitter-java",
  "tree-sitter-javascript",
+ "tree-sitter-kotlin-ng",
+ "tree-sitter-php",
  "tree-sitter-python",
+ "tree-sitter-ruby",
  "tree-sitter-rust",
+ "tree-sitter-swift",
  "tree-sitter-typescript",
 ]
 
 [[package]]
 name = "bf-local"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "bf-cloud",
@@ -581,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "bf-mcp"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "bf-vault",
@@ -592,7 +612,7 @@ dependencies = [
 
 [[package]]
 name = "bf-memory"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "bf-mcp",
@@ -602,7 +622,7 @@ dependencies = [
 
 [[package]]
 name = "bf-teach"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "enigo",
@@ -618,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "bf-vault"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "keyring",
@@ -626,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "bfi"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "bfi-core",
@@ -646,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-core"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "bfi-gguf",
@@ -663,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-gguf"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "half",
@@ -674,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-models"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "bfi-core",
@@ -685,7 +705,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-runtime"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "bfi-core",
@@ -702,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-server"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "axum",
@@ -722,7 +742,7 @@ dependencies = [
 
 [[package]]
 name = "bfi-web"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "bfi-core",
@@ -7270,7 +7290,7 @@ dependencies = [
 
 [[package]]
 name = "synapse"
-version = "2026.10.10"
+version = "2026.10.11"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -8266,6 +8286,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-c-sharp"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1aac67f1ad71de1d6d39708d34811081c26dfa495658de6c14c34200849357c"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-go"
 version = "0.23.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8296,10 +8326,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-kotlin-ng"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e800ebbda938acfbf224f4d2c34947a31994b1295ee6e819b65226c7b51b4450"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-language"
 version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca0d1bf6fdd806e43ae5198f82f527056d359def39e54e67a0f478ac09dac081"
+
+[[package]]
+name = "tree-sitter-php"
+version = "0.24.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d8c17c3ab69052c5eeaa7ff5cd972dd1bc25d1b97ee779fec391ad3b5df5592"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
 
 [[package]]
 name = "tree-sitter-python"
@@ -8312,10 +8362,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-ruby"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be0484ea4ef6bb9c575b4fdabde7e31340a8d2dbc7d52b321ac83da703249f95"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-rust"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "439e577dbe07423ec2582ac62c7531120dbfccfa6e5f92406f93dd271a120e45"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-swift"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2688c06564afa397313e0db17d140a73e2c6a47f3884794614246167c9dd5dfd"
 dependencies = [
  "cc",
  "tree-sitter-language",

@@ -42,6 +42,11 @@ fn search_repo_map_and_references_through_dispatch() {
 
     let map = api::dispatch(&reg, ops::REPO_MAP, json!({ "root": ws.path() })).unwrap();
     assert!(map["map"].as_str().unwrap().contains("applyStripeWebhook"));
+    // The task text is accepted and threaded through; a blank one is the same as none.
+    let queried = api::dispatch(&reg, ops::REPO_MAP, json!({ "root": ws.path(), "query": "fix applyStripeWebhook" })).unwrap();
+    assert!(queried["map"].as_str().unwrap().contains("applyStripeWebhook"));
+    let blank = api::dispatch(&reg, ops::REPO_MAP, json!({ "root": ws.path(), "query": "  " })).unwrap();
+    assert_eq!(blank["map"], map["map"]);
 
     let refs = api::dispatch(
         &reg,
@@ -111,4 +116,20 @@ fn outside_calls_land_in_activity_and_the_window_polling_does_not() {
     assert_eq!(entries[1]["detail"], "stripe webhook");
     assert_eq!(entries[1]["count"], 1);
     assert_eq!(entries[1]["ok"], true);
+}
+
+#[test]
+fn compress_is_reported_in_health_and_validates_its_rate() {
+    let data = tempfile::tempdir().unwrap();
+    let reg = Registry::new(data.path().to_path_buf());
+    let health = api::dispatch(&reg, ops::HEALTH, Value::Null).unwrap();
+    let expected = if cfg!(feature = "compress") { "idle" } else { "disabled" };
+    assert_eq!(health["compress"], expected);
+
+    let bad = api::dispatch(&reg, ops::COMPRESS, json!({ "text": "x", "rate": 1.5 }));
+    assert!(bad.unwrap_err().to_string().contains("rate"));
+    if !cfg!(feature = "compress") {
+        let off = api::dispatch(&reg, ops::COMPRESS, json!({ "text": "some prose" }));
+        assert!(off.unwrap_err().to_string().contains("compress feature"));
+    }
 }

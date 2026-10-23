@@ -10,7 +10,8 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
-const SCHEMA_VERSION: &str = "1";
+// 2: `file_imports` (import terms for the repo-map reference graph).
+const SCHEMA_VERSION: &str = "2";
 
 pub struct Store {
     conn: Connection,
@@ -35,8 +36,26 @@ pub struct SymbolRow {
     pub line: usize,
     pub signature: String,
     pub container: Option<String>,
-    /// Distinct OTHER files that reference the name — the repo-map importance signal.
-    pub refs: usize,
+}
+
+/// One resolved-name candidate: file `from` uses identifier `ident`, which file `to`
+/// defines. A name defined in several files yields one row per definer; the repo-map
+/// graph splits the reference between them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefRow {
+    pub from: String,
+    pub ident: String,
+    pub to: String,
+}
+
+/// Everything the repo map ranks over, loaded in four flat scans (no per-symbol query).
+#[derive(Debug, Clone, Default)]
+pub struct GraphRows {
+    pub paths: Vec<String>,
+    pub symbols: Vec<SymbolRow>,
+    pub refs: Vec<RefRow>,
+    /// `(path, term)` — lowercased identifier terms of the file's import statements.
+    pub imports: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -77,7 +96,8 @@ impl Store {
             // A cache, never a source of truth: an older layout is dropped and rebuilt.
             self.conn.execute_batch(
                 "DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS chunks; DROP TABLE IF EXISTS chunks_fts;
-                 DROP TABLE IF EXISTS symbols; DROP TABLE IF EXISTS file_idents;",
+                 DROP TABLE IF EXISTS symbols; DROP TABLE IF EXISTS file_idents;
+                 DROP TABLE IF EXISTS file_imports;",
             )?;
         }
         self.conn.execute_batch(
@@ -96,7 +116,9 @@ impl Store {
              CREATE INDEX IF NOT EXISTS symbols_path ON symbols(path);
              CREATE TABLE IF NOT EXISTS file_idents(
                 path TEXT NOT NULL, ident TEXT NOT NULL, PRIMARY KEY(path, ident)) WITHOUT ROWID;
-             CREATE INDEX IF NOT EXISTS file_idents_ident ON file_idents(ident);",
+             CREATE INDEX IF NOT EXISTS file_idents_ident ON file_idents(ident);
+             CREATE TABLE IF NOT EXISTS file_imports(
+                path TEXT NOT NULL, term TEXT NOT NULL, PRIMARY KEY(path, term)) WITHOUT ROWID;",
         )?;
         self.set_meta("schema", SCHEMA_VERSION)?;
         Ok(())
@@ -153,6 +175,10 @@ impl Store {
             let mut ins_ident = tx.prepare("INSERT OR IGNORE INTO file_idents(path, ident) VALUES(?1, ?2)")?;
             for ident in &fc.identifiers {
                 ins_ident.execute(params![path, ident])?;
+            }
+            let mut ins_import = tx.prepare("INSERT OR IGNORE INTO file_imports(path, term) VALUES(?1, ?2)")?;
+            for term in &fc.imports {
+                ins_import.execute(params![path, term])?;
             }
         }
         tx.commit()?;
@@ -238,12 +264,14 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    pub fn symbols_ranked(&self) -> Result<Vec<SymbolRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT s.name, s.kind, s.path, s.line, s.signature, s.container,
-                    (SELECT COUNT(*) FROM file_idents fi WHERE fi.ident = s.name AND fi.path <> s.path) AS refs
-             FROM symbols s",
-        )?;
+    /// The repo-map inputs. The reference rows are ONE join of `file_idents` against the
+    /// distinct `(name, path)` definitions (driven by the `symbols_name` index), so the
+    /// cost is one index probe per (file, identifier), not a correlated subquery per symbol.
+    /// Same-file rows are kept: a file that defines the name it uses resolves it locally.
+    pub fn repo_graph(&self) -> Result<GraphRows> {
+        let mut out = GraphRows { paths: self.all_paths()?, ..Default::default() };
+        let mut stmt =
+            self.conn.prepare("SELECT name, kind, path, line, signature, container FROM symbols ORDER BY path, line")?;
         let rows = stmt.query_map([], |r| {
             Ok(SymbolRow {
                 name: r.get(0)?,
@@ -252,10 +280,22 @@ impl Store {
                 line: r.get::<_, i64>(3)? as usize,
                 signature: r.get(4)?,
                 container: r.get(5)?,
-                refs: r.get::<_, i64>(6)? as usize,
             })
         })?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        out.symbols = rows.collect::<Result<_, _>>()?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT fi.path, fi.ident, d.path
+             FROM file_idents fi
+             JOIN (SELECT DISTINCT name, path FROM symbols) d ON d.name = fi.ident",
+        )?;
+        let rows = stmt.query_map([], |r| Ok(RefRow { from: r.get(0)?, ident: r.get(1)?, to: r.get(2)? }))?;
+        out.refs = rows.collect::<Result<_, _>>()?;
+
+        let mut stmt = self.conn.prepare("SELECT path, term FROM file_imports")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        out.imports = rows.collect::<Result<_, _>>()?;
+        Ok(out)
     }
 
     pub fn symbol_exists(&self, name: &str) -> Result<bool> {
@@ -283,6 +323,7 @@ fn delete_file_rows(tx: &rusqlite::Transaction, path: &str) -> Result<()> {
     tx.execute("DELETE FROM chunks WHERE path=?1", [path])?;
     tx.execute("DELETE FROM symbols WHERE path=?1", [path])?;
     tx.execute("DELETE FROM file_idents WHERE path=?1", [path])?;
+    tx.execute("DELETE FROM file_imports WHERE path=?1", [path])?;
     tx.execute("DELETE FROM files WHERE path=?1", [path])?;
     Ok(())
 }

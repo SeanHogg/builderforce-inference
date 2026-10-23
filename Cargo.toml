@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/bf-index",
     "crates/bf-context",
+    "crates/bf-compress",
     "crates/bf-memory",
     "crates/bf-mcp",
     "crates/bf-local",
@@ -20,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2026.10.10"
+version = "2026.10.11"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/SeanHogg/builderforce-inference"
@@ -41,6 +42,13 @@ tree-sitter-javascript = "0.23"
 tree-sitter-python = "0.23"
 tree-sitter-go = "0.23"
 tree-sitter-java = "0.23"
+# All five ship a `tree-sitter-language` LanguageFn (ABI 14/15), so they load on tree-sitter 0.25.
+# `tree-sitter-kotlin` (fwcd) still pins tree-sitter <0.23; the maintained `-ng` fork does not.
+tree-sitter-c-sharp = "0.23"
+tree-sitter-ruby = "0.23"
+tree-sitter-php = "0.24"
+tree-sitter-kotlin-ng = "1.1"
+tree-sitter-swift = "0.7.3"
 fastembed = "4"
 tiny_http = "0.12"
 ureq = { version = "2", features = ["json"] }

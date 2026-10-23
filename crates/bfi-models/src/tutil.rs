@@ -191,3 +191,17 @@ pub fn split_last(t: &Tensor, sizes: &[usize]) -> anyhow::Result<Vec<Tensor>> {
     }
     Ok(out)
 }
+
+/// Split a `[t, n_vocab]` logits tensor into one [`crate::Logits`] per row.
+pub fn logit_rows(t: &Tensor, n_vocab: usize) -> anyhow::Result<Vec<crate::Logits>> {
+    let data = as_f32(t)?;
+    ensure!(
+        n_vocab > 0 && !data.is_empty() && data.len() % n_vocab == 0,
+        "logits len {} is not a whole number of n_vocab={n_vocab} rows",
+        data.len()
+    );
+    Ok(data
+        .chunks_exact(n_vocab)
+        .map(|row| crate::Logits { values: row.to_vec() })
+        .collect())
+}

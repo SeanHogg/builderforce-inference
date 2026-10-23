@@ -304,15 +304,21 @@ impl Index {
 
     /// The repo map, cached per content generation (it only changes when files do).
     pub fn repo_map(&self, max_tokens: usize, focus: &[String]) -> Result<String> {
+        self.repo_map_with(&RepoMapOptions { max_tokens, focus, query: None })
+    }
+
+    /// The repo map with every option, including the task text that personalizes the
+    /// ranking. Cached per (content generation, options).
+    pub fn repo_map_with(&self, opts: &RepoMapOptions) -> Result<String> {
         let generation = self.generation.load(Ordering::SeqCst);
-        let key = format!("{max_tokens}|{}", focus.join(","));
+        let key = format!("{}|{}|{}", opts.max_tokens, opts.focus.join(","), opts.query.unwrap_or(""));
         if let Some((g, k, map)) = self.map_cache.lock().unwrap().as_ref() {
             if *g == generation && *k == key {
                 return Ok(map.clone());
             }
         }
-        let symbols = self.store.lock().unwrap().symbols_ranked()?;
-        let map = repo_map::render(&symbols, &RepoMapOptions { max_tokens, focus });
+        let rows = self.store.lock().unwrap().repo_graph()?;
+        let map = repo_map::render(&rows, opts);
         *self.map_cache.lock().unwrap() = Some((generation, key, map.clone()));
         Ok(map)
     }
@@ -424,6 +430,43 @@ mod tests {
         let map = idx.repo_map(500, &[]).unwrap();
         assert!(map.find("src/limits.ts").unwrap() < map.find("src/membership.ts").unwrap());
         assert_eq!(idx.repo_map(500, &[]).unwrap(), map);
+    }
+
+    #[test]
+    fn repo_map_resolves_same_named_definitions_through_imports() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::create_dir_all(root.join("core")).unwrap();
+        fs::write(root.join("app/config.ts"), "export class Config {
+  legacy = true;
+}
+").unwrap();
+        fs::write(root.join("core/config.ts"), "export class Config {
+  port = 1;
+}
+").unwrap();
+        for i in 0..3 {
+            fs::write(
+                root.join(format!("core/user{i}.ts")),
+                format!("import {{ Config }} from './config';
+export function start{i}() {{
+  return new Config();
+}}
+"),
+            )
+            .unwrap();
+        }
+        let idx = index(root, false);
+        let map = idx.repo_map(2000, &[]).unwrap();
+        assert!(map.find("core/config.ts").unwrap() < map.find("app/config.ts").unwrap(), "{map}");
+
+        // A task naming a file pulls it up, and the query is part of the cache key.
+        let q = idx
+            .repo_map_with(&RepoMapOptions { max_tokens: 2000, focus: &[], query: Some("why does user2 fail") })
+            .unwrap();
+        assert!(q.find("core/user2.ts").unwrap() < q.find("core/user0.ts").unwrap(), "{q}");
+        assert_ne!(q, map);
     }
 
     #[test]

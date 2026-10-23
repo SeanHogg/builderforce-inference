@@ -16,7 +16,7 @@ pub trait Architecture: Send + Sync {
     ) -> anyhow::Result<Box<dyn Model>>;
 }
 
-/// Loaded weights + a forward that writes last-token logits.
+/// Loaded weights + a forward that writes last-token logits (or every position's).
 pub trait Model: Send + Sync {
     fn architecture(&self) -> &'static str;
     fn n_layer(&self) -> usize;
@@ -32,6 +32,29 @@ pub trait Model: Send + Sync {
         pos: &[i32],
         state: &mut SeqState,
     ) -> anyhow::Result<Logits>;
+    /// Logits for EVERY position of `tokens`: row `i` is the next-token distribution after
+    /// `tokens[..=i]`, and `state` advances by `tokens.len()` exactly as [`Model::forward`]
+    /// does. Speculative decoding verifies a k-token draft with one call. The default runs
+    /// one `forward` per token — correct for any architecture, just no speedup; qwen3 and
+    /// qwen35 override it with one batched pass.
+    fn forward_each(
+        &self,
+        tokens: &[u32],
+        pos: &[i32],
+        state: &mut SeqState,
+    ) -> anyhow::Result<Vec<Logits>> {
+        anyhow::ensure!(
+            pos.len() == tokens.len(),
+            "forward_each: pos len {} != tokens {}",
+            pos.len(),
+            tokens.len()
+        );
+        tokens
+            .iter()
+            .zip(pos)
+            .map(|(&t, &p)| self.forward(&[t], &[p], state))
+            .collect()
+    }
     fn state_layout(&self) -> StateLayout;
     /// MTP / next-n tensors loaded but not run. Default 0.
     fn mtp_loaded(&self) -> usize {

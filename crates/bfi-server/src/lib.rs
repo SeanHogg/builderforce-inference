@@ -26,7 +26,7 @@ pub use discovery::{
     DiscoveryGuard,
 };
 
-use bfi_runtime::Engine;
+use bfi_runtime::{Engine, EngineOptions};
 use handlers::{
     api_chat, api_delete, api_generate, api_ps, api_pull, api_show, api_tags, api_version, health,
     v1_chat_completions, v1_completions, v1_embeddings, v1_messages, v1_models,
@@ -44,6 +44,8 @@ pub struct ServerConfig {
     pub api_key: Option<String>,
     /// Prefers this GGUF on first generate if set.
     pub model_path: Option<PathBuf>,
+    /// Options every loaded engine gets: prefix-cache byte budget, speculative decode.
+    pub engine: EngineOptions,
 }
 
 impl Default for ServerConfig {
@@ -53,6 +55,7 @@ impl Default for ServerConfig {
             port: 11434,
             api_key: None,
             model_path: None,
+            engine: EngineOptions::default(),
         }
     }
 }
@@ -62,6 +65,11 @@ impl ServerConfig {
     pub fn apply_env(&mut self) {
         let env = std::env::var("BFI_HOST").ok();
         self.host = resolve_host(env.as_deref(), &self.host);
+        apply_engine_env(
+            &mut self.engine,
+            std::env::var("BFI_PREFIX_CACHE_MB").ok().as_deref(),
+            std::env::var("BFI_SPEC_LOOKUP").ok().as_deref(),
+        );
     }
 
     /// Enable `--auth`: mint a token when none is configured.
@@ -70,6 +78,20 @@ impl ServerConfig {
             self.api_key = Some(mint_token());
         }
         self
+    }
+}
+
+/// `BFI_PREFIX_CACHE_MB=<n>` sets the prefix-cache budget; `BFI_SPEC_LOOKUP=1|true|on`
+/// turns prompt-lookup speculative decoding on (`0|false|off` turns it off). Unparseable
+/// values leave the option as configured.
+pub fn apply_engine_env(opts: &mut EngineOptions, cache_mb: Option<&str>, spec: Option<&str>) {
+    if let Some(mb) = cache_mb.and_then(|v| v.trim().parse::<usize>().ok()) {
+        opts.prefix_cache_bytes = mb.saturating_mul(1 << 20);
+    }
+    match spec.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        Some("1" | "true" | "on") => opts.spec_lookup = Some(opts.spec_lookup.unwrap_or_default()),
+        Some("0" | "false" | "off") => opts.spec_lookup = None,
+        _ => {}
     }
 }
 
@@ -101,6 +123,8 @@ pub(crate) struct Inner {
     pub engine: Mutex<Option<Loaded>>,
     pub api_key: Option<String>,
     pub model_path: Option<PathBuf>,
+    /// Passed to every `Engine::load_with`.
+    pub engine_options: EngineOptions,
 }
 
 /// Shared server state. Clone is cheap (`Arc`).
@@ -116,6 +140,7 @@ impl AppState {
                 engine: Mutex::new(None),
                 api_key: cfg.api_key,
                 model_path: cfg.model_path,
+                engine_options: cfg.engine,
             }),
         }
     }
@@ -253,6 +278,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+    use bfi_runtime::SpecLookup;
 
     async fn body_json(res: axum::http::Response<Body>) -> (StatusCode, serde_json::Value) {
         let status = res.status();
@@ -283,6 +309,19 @@ mod tests {
     #[test]
     fn router_builds() {
         let _app = router(AppState::new(ServerConfig::default()));
+    }
+
+    #[test]
+    fn engine_env_sets_cache_budget_and_spec_lookup() {
+        let mut o = EngineOptions::default();
+        apply_engine_env(&mut o, Some("256"), Some("on"));
+        assert_eq!(o.prefix_cache_bytes, 256 << 20);
+        assert_eq!(o.spec_lookup, Some(SpecLookup::default()));
+        apply_engine_env(&mut o, Some("lots"), Some("0"));
+        assert_eq!(o.prefix_cache_bytes, 256 << 20, "unparseable size is ignored");
+        assert!(o.spec_lookup.is_none());
+        apply_engine_env(&mut o, None, None);
+        assert!(o.spec_lookup.is_none());
     }
 
     #[test]

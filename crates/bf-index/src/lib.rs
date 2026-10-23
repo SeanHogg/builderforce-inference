@@ -1,11 +1,12 @@
 //! bf-index — the local code index behind Synapse.
 //!
-//! Structure (tree-sitter definitions, symbols, a reference-ranked repo map), keywords
+//! Structure (tree-sitter definitions, symbols, a PageRank-ranked repo map), keywords
 //! (identifier-aware BM25) and meaning (local embeddings) over one SQLite file per
 //! workspace, kept current by a file watcher. Everything stays on the machine.
 
 pub mod chunk;
 pub mod embed;
+pub mod graph;
 pub mod index;
 pub mod lang;
 pub mod refs;
@@ -18,3 +19,4 @@ pub mod watcher;
 
 pub use embed::Embedder;
 pub use index::{Hit, Index, IndexStatus, Phase, RefReport};
+pub use repo_map::RepoMapOptions;

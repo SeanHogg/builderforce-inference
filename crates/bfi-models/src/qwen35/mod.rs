@@ -200,41 +200,10 @@ impl Architecture for Qwen35Arch {
     }
 }
 
-impl Model for Qwen35Model {
-    fn architecture(&self) -> &'static str {
-        ARCH_NAME
-    }
-    fn n_layer(&self) -> usize {
-        self.cfg.n_layer
-    }
-    fn n_embd(&self) -> usize {
-        self.cfg.n_embd
-    }
-    fn n_vocab(&self) -> usize {
-        self.cfg.n_vocab
-    }
-    fn n_ctx(&self) -> usize {
-        self.cfg.n_ctx
-    }
-    fn n_head(&self) -> usize {
-        self.cfg.n_head
-    }
-    fn n_head_kv(&self) -> usize {
-        self.cfg.n_head_kv
-    }
-    fn head_dim(&self) -> usize {
-        self.cfg.head_dim
-    }
-    fn mtp_loaded(&self) -> usize {
-        self.mtp.len()
-    }
-
-    fn forward(
-        &self,
-        tokens: &[u32],
-        pos: &[i32],
-        state: &mut SeqState,
-    ) -> anyhow::Result<Logits> {
+impl Qwen35Model {
+    /// Every layer over `tokens`, committing their K/V (and recurrent state) to `state`.
+    /// Returns the final hidden rows `[t, n_embd]`, before the output norm.
+    fn hidden(&self, tokens: &[u32], pos: &[i32], state: &mut SeqState) -> anyhow::Result<Tensor> {
         ensure!(!tokens.is_empty(), "forward: empty token list");
         ensure!(
             pos.len() == tokens.len(),
@@ -341,17 +310,69 @@ impl Model for Qwen35Model {
         // MTP tensors live on `self.mtp` and are never forwarded.
 
         state.n += t;
-        x = last_row(&x)?;
-        x = b.rms_norm(&x, &self.output_norm, eps)?;
+        Ok(x)
+    }
+
+    /// Output norm + lm_head over every row of `x` (`[t, n_embd]`) → `t` logit rows.
+    fn head(&self, x: &Tensor) -> anyhow::Result<Vec<Logits>> {
+        let b = self.backend.as_ref();
+        let x = b.rms_norm(x, &self.output_norm, self.cfg.rms_eps)?;
         let logits = b.matmul_q(&self.output, &x)?;
-        let values = tutil::as_f32(&logits)?.to_vec();
-        ensure!(
-            values.len() == self.cfg.n_vocab,
-            "logits len {} != n_vocab {}",
-            values.len(),
-            self.cfg.n_vocab
-        );
-        Ok(Logits { values })
+        let rows = tutil::logit_rows(&logits, self.cfg.n_vocab)?;
+        ensure!(rows.len() == tutil::shape_of(&x)[0], "lm_head rows {} != hidden rows", rows.len());
+        Ok(rows)
+    }
+}
+
+impl Model for Qwen35Model {
+    fn architecture(&self) -> &'static str {
+        ARCH_NAME
+    }
+    fn n_layer(&self) -> usize {
+        self.cfg.n_layer
+    }
+    fn n_embd(&self) -> usize {
+        self.cfg.n_embd
+    }
+    fn n_vocab(&self) -> usize {
+        self.cfg.n_vocab
+    }
+    fn n_ctx(&self) -> usize {
+        self.cfg.n_ctx
+    }
+    fn n_head(&self) -> usize {
+        self.cfg.n_head
+    }
+    fn n_head_kv(&self) -> usize {
+        self.cfg.n_head_kv
+    }
+    fn head_dim(&self) -> usize {
+        self.cfg.head_dim
+    }
+    fn mtp_loaded(&self) -> usize {
+        self.mtp.len()
+    }
+
+    fn forward(
+        &self,
+        tokens: &[u32],
+        pos: &[i32],
+        state: &mut SeqState,
+    ) -> anyhow::Result<Logits> {
+        let x = self.hidden(tokens, pos, state)?;
+        self.head(&last_row(&x)?)?
+            .pop()
+            .ok_or_else(|| anyhow!("forward: lm_head produced no logits"))
+    }
+
+    fn forward_each(
+        &self,
+        tokens: &[u32],
+        pos: &[i32],
+        state: &mut SeqState,
+    ) -> anyhow::Result<Vec<Logits>> {
+        let x = self.hidden(tokens, pos, state)?;
+        self.head(&x)
     }
 
     fn state_layout(&self) -> StateLayout {

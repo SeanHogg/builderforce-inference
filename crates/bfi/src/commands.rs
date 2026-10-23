@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{anyhow, bail, Context, Result};
-use bfi_runtime::{aliases, model_path, models_dir, Engine, SampleParams};
+use bfi_runtime::{aliases, model_path, models_dir, Engine, EngineOptions, SampleParams, SpecLookup};
 use bfi_server::ServerConfig;
 
-use crate::cli::Commands;
+use crate::cli::{Commands, EngineFlags};
 use crate::fit::{self, cpu_budget_bytes, device_label};
 use crate::hf::{self, dest_path, download_resumable, parse_spec};
 use crate::ollama::{self, ollama_models_dir};
@@ -17,17 +17,18 @@ use crate::store::{format_bytes, list_store, remove_from_store};
 pub fn dispatch(cmd: Commands) -> Result<()> {
     match cmd {
         Commands::Pull { spec } => cmd_pull(&spec),
-        Commands::Run { model, prompt } => cmd_run(&model, prompt.as_deref()),
+        Commands::Run { model, prompt, engine } => cmd_run(&model, prompt.as_deref(), &engine),
         Commands::Serve {
             port,
             auth,
             models_dir,
-        } => cmd_serve(port, auth, models_dir),
+            engine,
+        } => cmd_serve(port, auth, models_dir, &engine),
         Commands::Ps { port } => cmd_ps(port),
         Commands::Fit { model, ctx, json } => cmd_fit(&model, ctx, json),
         Commands::Rm { model } => cmd_rm(&model),
         Commands::Ls => cmd_ls(),
-        Commands::Bench { model, pp, tg } => cmd_bench(&model, pp, tg),
+        Commands::Bench { model, pp, tg, engine } => cmd_bench(&model, pp, tg, &engine),
         Commands::BenchKernel {
             gguf,
             n_out,
@@ -56,10 +57,23 @@ fn cmd_pull(spec_raw: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_run(model: &str, prompt: Option<&str>) -> Result<()> {
+/// Clap flags → engine options (unset flags keep the engine defaults).
+pub(crate) fn engine_options(flags: &EngineFlags) -> EngineOptions {
+    let mut opts = EngineOptions::default();
+    if flags.spec_lookup {
+        opts.spec_lookup = Some(SpecLookup { draft_len: flags.draft_len.max(1), ..SpecLookup::default() });
+    }
+    if let Some(mb) = flags.prefix_cache_mb {
+        opts.prefix_cache_bytes = mb.saturating_mul(1 << 20);
+    }
+    opts
+}
+
+fn cmd_run(model: &str, prompt: Option<&str>, flags: &EngineFlags) -> Result<()> {
     let path = resolve_local_model(model)?;
     eprintln!("loading {}", path.display());
-    let mut engine = Engine::load(&path).with_context(|| format!("load {}", path.display()))?;
+    let mut engine =
+        Engine::load_with(&path, engine_options(flags)).with_context(|| format!("load {}", path.display()))?;
     match prompt {
         Some(p) => {
             let out = engine.generate(p, SampleParams::default())?;
@@ -92,7 +106,7 @@ fn interactive(engine: &mut Engine) -> Result<()> {
     Ok(())
 }
 
-fn cmd_serve(port: u16, auth: bool, models_dir: Option<PathBuf>) -> Result<()> {
+fn cmd_serve(port: u16, auth: bool, models_dir: Option<PathBuf>, flags: &EngineFlags) -> Result<()> {
     if let Some(dir) = models_dir {
         std::env::set_var("BFI_MODELS_DIR", &dir);
     }
@@ -106,6 +120,7 @@ fn cmd_serve(port: u16, auth: bool, models_dir: Option<PathBuf>) -> Result<()> {
         port,
         api_key,
         model_path: None,
+        engine: engine_options(flags),
     };
     eprintln!("bfi serve on 127.0.0.1:{port}");
     let rt = tokio::runtime::Runtime::new().context("tokio runtime")?;
@@ -232,9 +247,11 @@ fn cmd_rm(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_bench(model: &str, pp: usize, tg: usize) -> Result<()> {
+fn cmd_bench(model: &str, pp: usize, tg: usize, flags: &EngineFlags) -> Result<()> {
     let path = resolve_local_model(model)?;
-    let mut engine = Engine::load(&path).with_context(|| format!("load {}", path.display()))?;
+    // pp/tg are measured with plain decode; `--spec-lookup` adds its own comparison below.
+    let opts = EngineOptions { spec_lookup: None, ..engine_options(flags) };
+    let mut engine = Engine::load_with(&path, opts).with_context(|| format!("load {}", path.display()))?;
     let prompt: String = "The ".repeat(pp.max(1));
 
     let mut pp_params = SampleParams::default();
@@ -268,6 +285,58 @@ fn cmd_bench(model: &str, pp: usize, tg: usize) -> Result<()> {
         path.display(),
         format_bytes(size),
         device_label()
+    );
+    if flags.spec_lookup {
+        let spec = engine_options(flags).spec_lookup.unwrap_or_default();
+        bench_spec_lookup(&mut engine, tg, spec, &path.display().to_string(), &format_bytes(size))?;
+    }
+    Ok(())
+}
+
+/// A prompt whose answer copies its input — where prompt lookup pays off.
+fn copy_heavy_prompt() -> String {
+    let mut code = String::new();
+    for i in 0..12 {
+        code.push_str(&format!(
+            "fn handler_{i}(req: &Request) -> Result<Response> {{\n    let body = parse_body(req)?;\n    validate(&body)?;\n    Ok(Response::json(&body))\n}}\n\n"
+        ));
+    }
+    format!("{code}Repeat the code above exactly, unchanged:\n\n{code}")
+}
+
+/// `tg` greedy tokens with plain decode, then with speculative lookup, same warm prefix
+/// cache for both (the prompt is primed first so neither run pays the prefill).
+fn bench_spec_lookup(engine: &mut Engine, tg: usize, spec: SpecLookup, model: &str, size: &str) -> Result<()> {
+    let prompt = copy_heavy_prompt();
+    let params = |n: usize| SampleParams { max_tokens: n as u32, temperature: 0.0, ..SampleParams::default() };
+    engine.set_spec_lookup(None);
+    let _ = engine.generate(&prompt, params(1))?;
+
+    let t0 = Instant::now();
+    let plain = engine.generate(&prompt, params(tg))?;
+    let plain_n = engine.last_generated_tokens();
+    let plain_ts = plain_n as f64 / t0.elapsed().as_secs_f64().max(1e-9);
+
+    engine.set_spec_lookup(Some(spec));
+    engine.reset_spec_stats();
+    let t1 = Instant::now();
+    let fast = engine.generate(&prompt, params(tg))?;
+    let fast_n = engine.last_generated_tokens();
+    let fast_ts = fast_n as f64 / t1.elapsed().as_secs_f64().max(1e-9);
+    let stats = engine.spec_stats();
+    engine.set_spec_lookup(None);
+
+    let device = device_label();
+    println!("| {model} | {size} | {device} | tg{tg} copy (plain) | {plain_ts:.2} |");
+    println!("| {model} | {size} | {device} | tg{tg} copy (spec-lookup k={}) | {fast_ts:.2} |", spec.draft_len);
+    println!(
+        "spec-lookup: {:.2}x, acceptance {:.1}% ({}/{} drafted over {} verify passes), greedy output {}",
+        fast_ts / plain_ts.max(1e-9),
+        stats.acceptance() * 100.0,
+        stats.accepted,
+        stats.drafted,
+        stats.verify_passes,
+        if plain == fast { "identical" } else { "DIFFERS" }
     );
     Ok(())
 }

@@ -512,6 +512,53 @@ mod tests {
         }
     }
 
+    /// One batched `forward_each` = the logits token-by-token decode would produce at
+    /// every position (what speculative verification relies on), and the state advances
+    /// identically.
+    #[test]
+    fn qwen3_forward_each_matches_incremental_decode() {
+        let bytes = synthetic_qwen3_two_layer();
+        let (_dir, file) = open_bytes(&bytes);
+        let backend: Arc<dyn Backend> = Arc::new(CpuBackend);
+        let model = load_model(&file, backend).unwrap();
+
+        let mut batched = SeqState::allocate(&model.state_layout());
+        let _ = model.forward(&[1, 2], &[0, 1], &mut batched).unwrap();
+        let rows = model
+            .forward_each(&[3, 0, 2], &[2, 3, 4], &mut batched)
+            .expect("batched verify");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(batched.n, 5);
+
+        let mut inc = SeqState::allocate(&model.state_layout());
+        let _ = model.forward(&[1, 2], &[0, 1], &mut inc).unwrap();
+        for (i, (&tok, p)) in [3u32, 0, 2].iter().zip(2..).enumerate() {
+            let one = model.forward(&[tok], &[p], &mut inc).unwrap();
+            assert_finite_logits(&rows[i], 4);
+            for (j, (x, y)) in rows[i].as_slice().iter().zip(one.as_slice()).enumerate() {
+                assert!((x - y).abs() <= 1e-4, "row {i} logit {j}: batched={x} incremental={y}");
+            }
+        }
+        assert_eq!(inc.n, 5);
+    }
+
+    #[test]
+    fn qwen35_forward_each_last_row_is_forward() {
+        let bytes = synthetic_qwen35();
+        let (_dir, file) = open_bytes(&bytes);
+        let backend: Arc<dyn Backend> = Arc::new(CpuBackend);
+        let model = load_model(&file, backend).unwrap();
+        let mut a = SeqState::allocate(&model.state_layout());
+        let rows = model.forward_each(&[1, 2, 3], &[0, 1, 2], &mut a).unwrap();
+        let mut b = SeqState::allocate(&model.state_layout());
+        let last = model.forward(&[1, 2, 3], &[0, 1, 2], &mut b).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!((a.n, b.n), (3, 3));
+        for (x, y) in rows[2].as_slice().iter().zip(last.as_slice()) {
+            assert!((x - y).abs() <= 1e-5, "batched={x} forward={y}");
+        }
+    }
+
     #[test]
     fn qwen3_two_layer_forward_prompt_then_decode() {
         let bytes = synthetic_qwen3_two_layer();

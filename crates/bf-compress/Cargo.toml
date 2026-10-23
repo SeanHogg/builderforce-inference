@@ -1,0 +1,26 @@
+[package]
+name = "bf-compress"
+description = "LLMLingua-2 token-level prompt compression for Builderforce: keep the words a small token classifier marks as load-bearing, never touch code fences, paths or numbers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Off by default: without it the crate is the pure segmentation / selection core (no ONNX
+# Runtime, no download), so a default workspace build is unchanged.
+compress = ["dep:ort", "dep:ndarray", "dep:tokenizers", "dep:ureq"]
+
+[dependencies]
+anyhow.workspace = true
+sha2.workspace = true
+hex.workspace = true
+# Pinned to the exact ONNX Runtime binding fastembed 4.9 already pulls (bf-index embeddings),
+# so a build with both features links ONE runtime, not two.
+ort = { version = "=2.0.0-rc.9", default-features = false, features = ["ndarray", "download-binaries"], optional = true }
+ndarray = { version = "0.16", default-features = false, optional = true }
+tokenizers = { version = "0.21", default-features = false, features = ["onig"], optional = true }
+ureq = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
