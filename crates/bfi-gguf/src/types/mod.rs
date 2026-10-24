@@ -47,6 +47,9 @@ pub const TYPE_PQ2_0: u32 = 142;
 /// PrismML packed ternary. Identical layout to llama.cpp `TQ1_0` (id 34) with QK=128.
 pub const TYPE_PTQ1_0: u32 = 143;
 
+/// A block format's fused dot product: packed blocks · f32 activations.
+pub type VecDot = fn(&[u8], &[f32]) -> f32;
+
 /// One GGML / GGUF tensor type.
 #[derive(Clone, Copy)]
 pub struct GgmlType {
@@ -55,7 +58,7 @@ pub struct GgmlType {
     pub block_elems: usize,
     pub block_bytes: usize,
     pub dequant_row: fn(&[u8], &mut [f32]),
-    pub vec_dot: Option<fn(&[u8], &[f32]) -> f32>,
+    pub vec_dot: Option<VecDot>,
 }
 
 impl std::fmt::Debug for GgmlType {
@@ -72,7 +75,7 @@ impl std::fmt::Debug for GgmlType {
 impl GgmlType {
     pub fn bytes_for_elems(&self, n: u64) -> Option<u64> {
         let be = self.block_elems as u64;
-        if n % be != 0 {
+        if !n.is_multiple_of(be) {
             return None;
         }
         Some((n / be) * self.block_bytes as u64)
@@ -85,7 +88,7 @@ const fn t(
     block_elems: usize,
     block_bytes: usize,
     dequant_row: fn(&[u8], &mut [f32]),
-    vec_dot: Option<fn(&[u8], &[f32]) -> f32>,
+    vec_dot: Option<VecDot>,
 ) -> GgmlType {
     GgmlType {
         id,
@@ -185,7 +188,7 @@ pub fn require_type(id: u32, tensor: &str) -> Result<&'static GgmlType> {
 
 /// Dequantize a whole tensor (or a contiguous row-group) into `out`.
 pub fn dequant_tensor(ty: &GgmlType, data: &[u8], out: &mut [f32]) -> Result<()> {
-    if data.len() % ty.block_bytes != 0 {
+    if !data.len().is_multiple_of(ty.block_bytes) {
         return Err(GgufError::UnevenBlocks {
             tensor: ty.name.to_string(),
             ty: ty.name.to_string(),

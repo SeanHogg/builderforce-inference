@@ -1,0 +1,21 @@
+[package]
+name = "bfi-engine"
+description = "bfi's engine core, shared by bfi-web (wasm) and bfi-node (napi): stream a GGUF onto a backend and drive OpenAI chat turns"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# The GPU-resident engine (`Qwen3Resident`) on bfi-core's wgpu runtime: the browser's
+# WebGPU on wasm32, wgpu on Vulkan / Metal / DX12 natively.
+webgpu = ["bfi-core/webgpu", "bfi-models/webgpu"]
+
+[dependencies]
+bfi-gguf = { path = "../bfi-gguf" }
+bfi-core = { path = "../bfi-core" }
+bfi-models = { path = "../bfi-models" }
+bfi-runtime = { path = "../bfi-runtime" }
+anyhow.workspace = true
+serde_json.workspace = true

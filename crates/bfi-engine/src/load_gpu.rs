@@ -1,7 +1,7 @@
-//! The WebGPU backend's load: every tensor uploaded packed into its own GPU buffer as
-//! the stream completes it (inside the device's error scopes, so an out-of-memory
-//! upload fails the load), then a KV cache sized by `kv_plan` and allocated with
-//! halving retries.
+//! The GPU backend's load: every tensor uploaded packed into its own GPU buffer as the
+//! stream completes it (inside the device's error scopes where the host has them, so an
+//! out-of-memory upload fails the load), then a KV cache sized by `kv_plan` and
+//! allocated with halving retries.
 
 use bfi_core::resident::{Gpu, ResidentError};
 use bfi_gguf::{ModelHeader, StreamedTensor};
@@ -10,13 +10,11 @@ use bfi_models::kv_plan::{
 };
 use bfi_models::Qwen3ResidentLoader;
 use bfi_runtime::Tokenizer;
-use js_sys::{Function, Object};
-use wasm_bindgen::JsValue;
 
-use crate::errors::{classify, error, gpu_error, Kind};
+use crate::errors::{classify, error, gpu_error, EngineError, Kind};
 use crate::loader::{tokenizer_for, LoadOptions, Loaded};
 use crate::runner::Runner;
-use crate::stream::{pump, TensorSink};
+use crate::stream::{pump, ByteSource, TensorSink};
 use crate::support::AdapterInfo;
 
 /// The largest single storage buffer the adapter allows (same rule as `contextFor`).
@@ -33,7 +31,7 @@ struct GpuSink<'a> {
 }
 
 impl TensorSink for GpuSink<'_> {
-    async fn accept(&mut self, header: &ModelHeader, done: Vec<StreamedTensor>) -> Result<(), JsValue> {
+    async fn accept(&mut self, header: &ModelHeader, done: Vec<StreamedTensor>) -> Result<(), EngineError> {
         if done.is_empty() && self.pending.is_some() {
             return Ok(());
         }
@@ -51,7 +49,7 @@ fn place(
     header: &ModelHeader,
     pending: &mut Option<(Qwen3ResidentLoader, (Tokenizer, Option<String>))>,
     done: Vec<StreamedTensor>,
-) -> Result<(), JsValue> {
+) -> Result<(), EngineError> {
     if pending.is_none() {
         let loader = Qwen3ResidentLoader::new(gpu.clone(), header).map_err(|e| classify(Kind::LoadFailed, &e))?;
         *pending = Some((loader, tokenizer_for(header)?));
@@ -66,13 +64,13 @@ fn place(
 pub async fn load(
     gpu: &Gpu,
     adapter: &AdapterInfo,
-    chunks: &Object,
+    source: &mut impl ByteSource,
     total_bytes: f64,
-    on_progress: Option<&Function>,
+    on_progress: &mut dyn FnMut(f64, f64),
     opts: LoadOptions,
-) -> Result<Loaded, JsValue> {
+) -> Result<Loaded, EngineError> {
     let mut sink = GpuSink { gpu, pending: None };
-    pump(chunks, total_bytes, on_progress, &mut sink).await?;
+    pump(source, total_bytes, on_progress, &mut sink).await?;
     let (loader, tokenizer) = sink.pending.ok_or_else(|| error(Kind::LoadFailed, "empty GGUF stream"))?;
     let kv_budget = opts.kv_budget_bytes.unwrap_or(DEFAULT_KV_BUDGET_BYTES);
 

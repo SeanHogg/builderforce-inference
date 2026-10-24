@@ -61,8 +61,8 @@ pub fn dequantize_row_ptq1_0(block: &[u8], out: &mut [f32]) {
         b += c;
     }
     for n in 0..4 {
-        for h in 0..2 {
-            out[i] = (trit(qh[h], n) as i8 as f32 - 1.0) * d;
+        for &q in qh {
+            out[i] = (trit(q, n) as i8 as f32 - 1.0) * d;
             i += 1;
         }
     }

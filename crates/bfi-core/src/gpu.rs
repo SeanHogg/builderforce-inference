@@ -173,8 +173,23 @@ fn probe_hip() -> bool {
     .unwrap_or(false)
 }
 
+/// With `webgpu` on, the resident path's process-wide device (`resident::open_native`,
+/// CubeCL's `init_setup`) must register `DefaultDevice` before any lazy client here, or
+/// its registration would collide with this one; it is opened first, and its failure is
+/// this backend's.
+#[cfg(any(feature = "vulkan", feature = "metal"))]
+fn default_wgpu_ready() -> bool {
+    #[cfg(all(feature = "webgpu", not(target_family = "wasm")))]
+    return crate::resident::native_limits().is_some();
+    #[cfg(not(all(feature = "webgpu", not(target_family = "wasm"))))]
+    true
+}
+
 #[cfg(any(feature = "vulkan", feature = "metal"))]
 fn probe_wgpu() -> bool {
+    if !default_wgpu_ready() {
+        return false;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let device = cubecl::wgpu::WgpuDevice::DefaultDevice;
         let client = cubecl::wgpu::WgpuRuntime::client(&device);
@@ -219,6 +234,9 @@ fn open_client(kind: DeviceKind) -> Option<CubeClient> {
         DeviceKind::Metal | DeviceKind::Vulkan => {
             #[cfg(any(feature = "vulkan", feature = "metal"))]
             {
+                if !default_wgpu_ready() {
+                    return None;
+                }
                 return std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let device = cubecl::wgpu::WgpuDevice::DefaultDevice;
                     CubeClient::Wgpu(cubecl::wgpu::WgpuRuntime::client(&device))

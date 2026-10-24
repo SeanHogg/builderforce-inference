@@ -1,20 +1,20 @@
 //! The loaded model on its backend, behind the handful of operations `chat` drives —
 //! so the chat loop (prompt-prefix reuse, abortable prefill, decode) is written once.
 //!
-//! - WebGPU: `Qwen3Resident` enqueues kernels; the logits readback is the one host sync
-//!   per step (and yields to the event loop).
+//! - GPU: `Qwen3Resident` enqueues kernels; the logits readback is the one host sync per
+//!   step (in a browser it also yields to the event loop).
 //! - CPU: `Session` computes synchronously on the calling thread; each step is followed
-//!   by a macrotask yield ([`js::yield_now`]) so an abort or a repaint gets in.
+//!   by [`Host::yield_now`] so an abort or a repaint gets in where the host has an event
+//!   loop on this thread.
 
 #[cfg(feature = "webgpu")]
 use bfi_models::Qwen3Resident;
 use bfi_models::Session;
-use wasm_bindgen::JsValue;
 
 #[cfg(feature = "webgpu")]
 use crate::errors::gpu_error;
-use crate::errors::{classify, Kind};
-use crate::js;
+use crate::errors::{classify, EngineError, Kind};
+use crate::host::Host;
 
 /// Prompt tokens per CPU forward between yields. CPU throughput does not grow with the
 /// group (the kernels are compute-bound per token), so a small group only bounds how
@@ -63,7 +63,7 @@ impl Runner {
             Self::Cpu(s) => s.params(),
         }
     }
-    /// KV cache in f16 (WebGPU with `shader-f16`); the CPU cache is f32.
+    /// KV cache in f16 (a GPU with `shader-f16`); the CPU cache is f32.
     pub fn kv_f16(&self) -> bool {
         match self {
             #[cfg(feature = "webgpu")]
@@ -96,33 +96,35 @@ impl Runner {
     }
 
     /// Append `tokens` without logits (a leading prompt group), then yield.
-    pub async fn prefill(&mut self, tokens: &[u32]) -> Result<(), JsValue> {
+    pub async fn prefill(&mut self, tokens: &[u32], host: &impl Host) -> Result<(), EngineError> {
         match self {
             #[cfg(feature = "webgpu")]
             Self::Gpu(m) => {
+                let _ = host;
                 m.prefill(tokens).map_err(|e| classify(Kind::Engine, &e))?;
-                // A one-word readback: the queue drains and the event loop runs.
+                // A one-word readback: the queue drains (and a browser's event loop runs).
                 m.gpu().drain().await.map_err(|e| gpu_error(Kind::Engine, &e))
             }
             Self::Cpu(s) => {
                 s.forward(tokens).map_err(|e| classify(Kind::Engine, &e))?;
-                js::yield_now().await;
+                host.yield_now().await;
                 Ok(())
             }
         }
     }
 
     /// Append `tokens` and return the last token's logits on the host.
-    pub async fn logits(&mut self, tokens: &[u32]) -> Result<Vec<f32>, JsValue> {
+    pub async fn logits(&mut self, tokens: &[u32], host: &impl Host) -> Result<Vec<f32>, EngineError> {
         match self {
             #[cfg(feature = "webgpu")]
             Self::Gpu(m) => {
+                let _ = host;
                 let logits = m.forward(tokens).map_err(|e| classify(Kind::Engine, &e))?;
                 m.gpu().read_f32(&logits).await.map_err(|e| gpu_error(Kind::Engine, &e))
             }
             Self::Cpu(s) => {
                 let logits = s.forward(tokens).map_err(|e| classify(Kind::Engine, &e))?;
-                js::yield_now().await;
+                host.yield_now().await;
                 Ok(logits)
             }
         }

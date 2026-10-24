@@ -1,0 +1,75 @@
+# bfi-node — Synapse's engine as a native Node addon, built for every platform the
+# Builderforce VS Code extension ships to (Vulkan on Windows / Linux, Metal on macOS).
+# Each job uploads `bfi_node.<platform>-<arch>.node` with the stamp `build.mjs` writes
+# (the commit, clean or dirty); Builderforce vendors them with
+#
+#   gh run download <run-id> -R SeanHogg/builderforce-inference -p 'bfi-node-*' -D <dir>
+#   node scripts/vendor-bfi-node.mjs --from <dir>
+#
+# By hand, or when the engine's crates change on main — never on every push.
+name: bfi-node
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/bfi-node/**'
+      - 'crates/bfi-engine/**'
+      - 'crates/bfi-core/**'
+      - 'crates/bfi-models/**'
+      - 'crates/bfi-runtime/**'
+      - 'crates/bfi-gguf/**'
+      - 'Cargo.lock'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bfi-node-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  addon:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: win32-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            platform: darwin-x64
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bfi-node-${{ matrix.target }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Build
+        run: node crates/bfi-node/build.mjs --target ${{ matrix.target }}
+      # The CPU path end to end (a runner has no GPU; `auto` falls back to the CPU).
+      - name: Smoke
+        if: matrix.target != 'x86_64-apple-darwin'
+        run: node crates/bfi-node/smoke.mjs --backend cpu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bfi-node-${{ matrix.platform }}
+          path: |
+            crates/bfi-node/bfi_node.${{ matrix.platform }}.node
+            crates/bfi-node/.bfi-build-stamp.${{ matrix.platform }}.json
+          include-hidden-files: true
+          if-no-files-found: error

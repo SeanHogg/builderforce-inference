@@ -6,7 +6,7 @@
 //! cache on the device, *enqueues* a whole forward pass, and awaits exactly one
 //! readback (the logits) per step via [`Gpu::read_f32`].
 //!
-//! The same code runs natively (wgpu → Vulkan/Metal/DX12), which is how the
+//! The same code runs natively (wgpu → Vulkan, Metal on macOS), which is how the
 //! kernels are tested against [`crate::CpuBackend`] without a browser.
 //!
 //! Weights stay packed: one device buffer per tensor holding the GGUF block bytes.
@@ -28,7 +28,7 @@ use cubecl::wgpu::WgpuRuntime;
 #[cfg(target_family = "wasm")]
 pub use device::open_webgpu;
 #[cfg(not(target_family = "wasm"))]
-pub use device::open_native;
+pub use device::{native_backend, native_limits, open_native, probe_native, NativeLimits};
 
 /// Drive a resident future (e.g. [`Gpu::read_f32`]) to completion. Native only:
 /// on wasm32 the browser cannot block, so callers `.await` instead.
@@ -107,30 +107,22 @@ impl Weight {
 #[derive(Clone)]
 pub struct Gpu {
     client: ResidentClient,
-    /// The raw wgpu device, when we created it (browser path): lets
+    /// The raw wgpu device (kept from the setup on both paths): lets
     /// [`Gpu::kv_fits`] / [`Gpu::checked`] run allocations inside error scopes,
     /// which CubeCL does not expose (see `health.rs`).
-    probe_device: Option<wgpu::Device>,
+    probe_device: wgpu::Device,
     /// Set by the device-lost callback.
     health: health::DeviceHealth,
 }
 
 impl Gpu {
-    pub fn from_client(client: ResidentClient) -> Self {
-        Self {
-            client,
-            probe_device: None,
-            health: health::DeviceHealth::default(),
-        }
-    }
-
-    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    #[cfg(target_family = "wasm")]
     pub(crate) fn with_probe_device(client: ResidentClient, device: wgpu::Device) -> Self {
         let health = health::DeviceHealth::default();
         health.watch(&device);
         Self {
             client,
-            probe_device: Some(device),
+            probe_device: device,
             health,
         }
     }

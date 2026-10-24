@@ -1,31 +1,31 @@
 //! `BfiEngine.chat`: one OpenAI `chat.completions` request on the loaded model.
 //!
-//! Request parsing, prompt rendering (GGUF chat template, tools), sampling,
-//! stop strings, tool-call detection and chunk JSON all come from
-//! `bfi_runtime::openai`; this loop only drives the backend ([`Runner`]): feed the
-//! prompt, await each step's logits (which also yields to the host's event loop),
+//! Request parsing, prompt rendering (GGUF chat template, tools), sampling, stop
+//! strings, tool-call detection and chunk JSON all come from `bfi_runtime::openai`; this
+//! loop only drives the backend ([`Runner`]): feed the prompt, await each step's logits,
 //! step the turn, emit its chunks. Long prompts are fed in groups of
 //! [`Runner::prefill_group`] tokens with a yield between groups, so an abort lands
 //! mid-prompt on either backend.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use bfi_runtime::openai::{ChatRequest, ChatTurn, Step};
-use js_sys::{Function, Object};
-use wasm_bindgen::JsValue;
 
-use crate::errors::{error, Kind};
-use crate::js;
+use crate::errors::{error, EngineError, Kind};
+use crate::host::Host;
 use crate::loader::Loaded;
 use crate::runner::Runner;
 
+/// Run one request. `on_chunk` receives each chunk JSON (when `stream: true`); `stop` is
+/// polled before every step (the host's abort, `unload`, a lost device). Resolves with
+/// the final completion JSON (`usage`, `finish_reason`, `tool_calls`).
 pub async fn chat(
     loaded: &mut Loaded,
     request_json: &str,
-    on_chunk: &Function,
-    signal: Option<&Object>,
-    cancelled: impl Fn() -> bool,
-) -> Result<String, JsValue> {
+    host: &impl Host,
+    on_chunk: &mut dyn FnMut(&str) -> Result<(), EngineError>,
+    stop: &dyn Fn() -> bool,
+) -> Result<String, EngineError> {
     let req = ChatRequest::from_json(request_json).map_err(|e| error(Kind::InvalidRequest, e))?;
     let plan = req
         .plan(loaded.template.as_deref())
@@ -37,7 +37,7 @@ pub async fn chat(
     if ids.is_empty() {
         return Err(error(Kind::InvalidRequest, "the rendered prompt is empty"));
     }
-    let created = js::now_secs();
+    let created = host.now_secs();
     let mut turn = ChatTurn::new(
         &plan,
         &ids,
@@ -46,10 +46,10 @@ pub async fn chat(
         created,
     )
     .map_err(|e| error(Kind::ContextExceeded, e))?;
-    let pieces: Rc<Vec<String>> = if turn.needs_pieces() {
+    let pieces: Arc<Vec<String>> = if turn.needs_pieces() {
         loaded.pieces()
     } else {
-        Rc::new(Vec::new())
+        Arc::new(Vec::new())
     };
 
     // Reuse the KV cache for the prompt prefix the previous turn already fed;
@@ -59,8 +59,7 @@ pub async fn chat(
     // A backend that cannot rewind partway (recurrent state) restarts from empty.
     let keep = loaded.model.n_past();
     loaded.cached.truncate(keep);
-    let stop = || js::aborted(signal) || cancelled();
-    let mut logits = prefill(&mut loaded.model, &mut loaded.cached, &ids[keep..], &stop).await?;
+    let mut logits = prefill(&mut loaded.model, &mut loaded.cached, &ids[keep..], host, stop).await?;
 
     loop {
         if stop() {
@@ -68,13 +67,11 @@ pub async fn chat(
         }
         let (step, chunks) = turn.step(&logits, &loaded.tokenizer, &pieces);
         for c in chunks {
-            on_chunk
-                .call1(&JsValue::NULL, &JsValue::from_str(&c))
-                .map_err(|e| error(Kind::Engine, format!("onChunk threw: {e:?}")))?;
+            on_chunk(&c)?;
         }
         match step {
             Step::Feed(token) => {
-                logits = loaded.model.logits(&[token]).await?;
+                logits = loaded.model.logits(&[token], host).await?;
                 loaded.cached.push(token);
                 if stop() {
                     return Err(error(Kind::Aborted, ""));
@@ -87,16 +84,16 @@ pub async fn chat(
     Ok(turn.completion_json())
 }
 
-/// Feed `prompt` and return its last token's logits. All but the final group
-/// are fed without logits, each followed by a yield to the event loop; `stop`
-/// is checked before every group. `cached` tracks exactly what reached the KV
-/// cache, so an abort leaves it consistent.
+/// Feed `prompt` and return its last token's logits. All but the final group are fed
+/// without logits, each followed by a yield; `stop` is checked before every group.
+/// `cached` tracks exactly what reached the KV cache, so an abort leaves it consistent.
 async fn prefill(
     model: &mut Runner,
     cached: &mut Vec<u32>,
     prompt: &[u32],
-    stop: &impl Fn() -> bool,
-) -> Result<Vec<f32>, JsValue> {
+    host: &impl Host,
+    stop: &dyn Fn() -> bool,
+) -> Result<Vec<f32>, EngineError> {
     let group = model.prefill_group();
     // The final group carries the logits: the remainder, or a full group.
     let tail = match prompt.len() % group {
@@ -109,13 +106,13 @@ async fn prefill(
         if stop() {
             return Err(error(Kind::Aborted, ""));
         }
-        model.prefill(part).await?;
+        model.prefill(part, host).await?;
         cached.extend_from_slice(part);
     }
     if stop() {
         return Err(error(Kind::Aborted, ""));
     }
-    let logits = model.logits(last).await?;
+    let logits = model.logits(last, host).await?;
     cached.extend_from_slice(last);
     Ok(logits)
 }

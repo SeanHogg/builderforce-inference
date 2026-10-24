@@ -1,0 +1,29 @@
+[package]
+name = "bfi-node"
+description = "bfi inside a Node process (the editor's extension host): the BfiEngine JS class on native wgpu (Vulkan, Metal on macOS) or the multi-threaded CPU, over bfi-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = ["webgpu"]
+# The GPU-resident engine on native wgpu — Vulkan (Windows / Linux), Metal (macOS),
+# the graphics API CubeCL opens — running the same WGSL kernels the browser's WebGPU runs.
+webgpu = ["bfi-engine/webgpu", "bfi-core/webgpu"]
+
+[dependencies]
+bfi-engine = { path = "../bfi-engine" }
+bfi-core = { path = "../bfi-core" }
+bfi-models = { path = "../bfi-models" }
+serde_json.workspace = true
+rayon.workspace = true
+sysinfo.workspace = true
+napi = { version = "2.16", default-features = false, features = ["napi6"] }
+napi-derive = "2.16"
+
+[build-dependencies]
+napi-build = "2"

@@ -1,0 +1,27 @@
+{
+  "name": "@seanhogg/bfi-node",
+  "version": "2026.10.12",
+  "description": "bfi inside a Node process: 1-bit Bonsai (GGUF Q1_0) on native wgpu (Vulkan / Metal / DX12) or the multi-threaded CPU. The BfiEngine class from Builderforce spec 34 §3.1.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SeanHogg/builderforce-inference",
+    "directory": "crates/bfi-node"
+  },
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "bfi_node.*.node",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["webgpu", "wgpu", "napi", "llm", "gguf", "bonsai", "inference"],
+  "scripts": {
+    "build": "node build.mjs",
+    "smoke": "node smoke.mjs"
+  }
+}

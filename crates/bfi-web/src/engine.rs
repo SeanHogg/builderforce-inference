@@ -1,19 +1,21 @@
-//! The exported `BfiEngine` class. Owns its backend (a WebGPU device, or the CPU) and
-//! at most one loaded model; `load` / `chat` are exclusive (a second call while one
-//! runs rejects with `busy:`), `unload` during a chat aborts it. Once a WebGPU device
-//! is lost (`device.lost`), the model is dropped and every later `load` / `chat`
-//! rejects with `webgpu_unavailable:` — create a new engine.
+//! The exported `BfiEngine` class — `bfi_engine::EngineState` behind wasm-bindgen
+//! promises. Owns its backend (a WebGPU device, or the CPU) and at most one loaded
+//! model; `load` / `chat` are exclusive (a second call while one runs rejects with
+//! `busy:`), `unload` during a chat aborts it. Once a WebGPU device is lost
+//! (`device.lost`), the model is dropped and every later `load` / `chat` rejects with
+//! `webgpu_unavailable:` — create a new engine.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[cfg(feature = "webgpu")]
+use bfi_core::resident::open_webgpu;
+use bfi_engine::{context_for, error, BackendChoice, Device, EngineState, HostProfile, Kind, LoadOptions};
 use js_sys::{Function, Object, Promise};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
-use crate::device::{BackendChoice, Device};
-use crate::errors::{error, Kind};
-use crate::loader::{self, LoadOptions, Loaded};
+use crate::js::{self, js_error, StreamSource, WebHost};
 use crate::support;
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -69,32 +71,33 @@ export interface BfiSupport {
 }
 "#;
 
-struct State {
-    device: Device,
-    model: Option<Loaded>,
-    busy: bool,
-    unload_requested: bool,
-}
-
-impl State {
-    /// `Err(webgpu_unavailable)` once the device is lost; drops the model (its
-    /// buffers belong to the dead device, so there is nothing to release).
-    fn alive(&mut self) -> Result<(), JsValue> {
-        let Some(why) = self.device.lost() else {
-            return Ok(());
-        };
-        self.model = None;
-        Err(error(
-            Kind::WebgpuUnavailable,
-            format!("the GPU device was lost ({why}); create a new BfiEngine"),
-        ))
+/// Open the backend `choice` names. The browser cannot block, so the GPU is opened by
+/// awaiting CubeCL's setup — and only after `requestAdapter()` confirmed an adapter
+/// (CubeCL panics without one, and a wasm panic aborts the module).
+async fn open(choice: BackendChoice) -> Result<Device, JsValue> {
+    if choice == BackendChoice::Cpu {
+        return Ok(Device::Cpu);
     }
+    let adapter = support::probe_webgpu().await;
+    if !choice
+        .wants_gpu(adapter.supported, adapter.reason.as_deref())
+        .map_err(js_error)?
+    {
+        return Ok(Device::Cpu);
+    }
+    #[cfg(feature = "webgpu")]
+    {
+        let gpu = open_webgpu().await;
+        Ok(Device::Gpu { gpu, adapter })
+    }
+    #[cfg(not(feature = "webgpu"))]
+    unreachable!("probe_webgpu reports unsupported in a build without WebGPU")
 }
 
 /// bfi in the browser, on WebGPU or the CPU. See `README.md` for the JS contract.
 #[wasm_bindgen]
 pub struct BfiEngine {
-    state: Rc<RefCell<State>>,
+    state: Rc<RefCell<EngineState>>,
 }
 
 #[wasm_bindgen]
@@ -105,29 +108,26 @@ impl BfiEngine {
         #[wasm_bindgen(unchecked_param_type = "BfiCreateOptions")] options: Option<Object>,
     ) -> Result<BfiEngine, JsValue> {
         console_error_panic_hook::set_once();
-        let choice = BackendChoice::from_js(options.as_ref())?;
-        let device = Device::open(choice).await?;
+        let raw = options.as_ref().map(|o| js::get(o, "backend")).filter(js::present);
+        let name = raw.map(|v| v.as_string().unwrap_or_else(|| format!("{v:?}")));
+        let choice = BackendChoice::parse(name.as_deref()).map_err(js_error)?;
+        let device = open(choice).await?;
         Ok(BfiEngine {
-            state: Rc::new(RefCell::new(State {
-                device,
-                model: None,
-                busy: false,
-                unload_requested: false,
-            })),
+            state: Rc::new(RefCell::new(EngineState::new(device))),
         })
     }
 
     /// The backend this engine runs on.
     #[wasm_bindgen(getter, unchecked_return_type = "BfiBackend")]
     pub fn backend(&self) -> String {
-        self.state.borrow().device.name().to_string()
+        self.state.borrow().backend().to_string()
     }
 
     /// Every backend's capabilities; requests a WebGPU adapter only — no device — so it
     /// is safe on every capability check.
     #[wasm_bindgen(unchecked_return_type = "Promise<BfiSupport>")]
     pub fn support() -> Promise {
-        future_to_promise(async { Ok(support::probe().await.to_js()) })
+        future_to_promise(async { Ok(js::to_js(&support::probe().await.to_json())) })
     }
 
     /// Predict the context `load` will serve for a model shape, before
@@ -141,7 +141,7 @@ impl BfiEngine {
     pub fn context_for(
         #[wasm_bindgen(unchecked_param_type = "BfiContextShape")] shape: Object,
     ) -> f64 {
-        crate::plan::context_for_js(&shape) as f64
+        js::to_json(&shape).map_or(0, |s| context_for(&s, &HostProfile::WASM)) as f64
     }
 
     /// Load a GGUF streamed by the host (the host owns download + cache).
@@ -155,43 +155,25 @@ impl BfiEngine {
         on_progress: Option<Function>,
         #[wasm_bindgen(unchecked_param_type = "BfiLoadOptions")] options: Option<Object>,
     ) -> Promise {
-        let opts = LoadOptions::from_js(options.as_ref());
+        let opts = LoadOptions::from_json(options.as_ref().and_then(|o| js::to_json(o)).as_ref());
         let state = self.state.clone();
         future_to_promise(async move {
-            let device = {
-                let mut s = state.borrow_mut();
-                if s.busy {
-                    return Err(error(Kind::Busy, "another load or chat is running"));
+            let device = state.borrow_mut().begin_load().map_err(js_error)?;
+            let mut progress = |loaded: f64, total: f64| {
+                if let Some(cb) = &on_progress {
+                    let _ = cb.call2(&JsValue::NULL, &JsValue::from_f64(loaded), &JsValue::from_f64(total));
                 }
-                s.alive()?;
-                s.busy = true;
-                s.unload_requested = false;
-                if s.model.take().is_some() {
-                    s.device.release_unused();
-                }
-                s.device.clone()
             };
-            let result = loader::load(&device, &chunks, total_bytes, on_progress.as_ref(), opts).await;
-            let mut s = state.borrow_mut();
-            s.busy = false;
-            // A lost device outranks whatever the load returned.
-            s.alive()?;
-            match result {
-                Ok(loaded) if !s.unload_requested => {
-                    let info = loaded.info();
-                    s.model = Some(loaded);
-                    Ok(info)
+            let result = match StreamSource::new(&chunks) {
+                Ok(mut source) => {
+                    let r = EngineState::load(&device, &HostProfile::WASM, &mut source, total_bytes, &mut progress, opts).await;
+                    source.release();
+                    r
                 }
-                Ok(_) => {
-                    s.unload_requested = false;
-                    s.device.release_unused();
-                    Err(error(Kind::Aborted, ""))
-                }
-                Err(e) => {
-                    s.device.release_unused();
-                    Err(e)
-                }
-            }
+                Err(e) => Err(e),
+            };
+            let info = state.borrow_mut().finish_load(result).map_err(js_error)?;
+            Ok(js::to_js(&info.to_json()))
         })
     }
 
@@ -208,56 +190,27 @@ impl BfiEngine {
     ) -> Promise {
         let state = self.state.clone();
         future_to_promise(async move {
-            let mut loaded = {
-                let mut s = state.borrow_mut();
-                if s.busy {
-                    return Err(error(Kind::Busy, "another load or chat is running"));
-                }
-                s.alive()?;
-                let Some(m) = s.model.take() else {
-                    return Err(error(Kind::NotLoaded, "call load() first"));
-                };
-                s.busy = true;
-                m
+            let mut loaded = state.borrow_mut().begin_chat().map_err(js_error)?;
+            let mut emit = |chunk: &str| {
+                on_chunk
+                    .call1(&JsValue::NULL, &JsValue::from_str(chunk))
+                    .map(|_| ())
+                    .map_err(|e| error(Kind::Engine, format!("onChunk threw: {e:?}")))
             };
-            let flag = state.clone();
-            let result = crate::chat::chat(
-                &mut loaded,
-                &request_json,
-                &on_chunk,
-                signal.as_ref(),
-                // Stop at the next chunk on unload or a lost device.
-                move || {
-                    let s = flag.borrow();
-                    s.unload_requested || s.device.lost().is_some()
-                },
-            )
-            .await;
-            let mut s = state.borrow_mut();
-            s.busy = false;
-            if s.unload_requested || s.device.lost().is_some() {
-                s.unload_requested = false;
-                drop(loaded);
-                // Lost: reject webgpu_unavailable (nothing to release on a dead device).
-                s.alive()?;
-                s.device.release_unused();
-            } else {
-                s.model = Some(loaded);
-            }
-            result.map(JsValue::from)
+            // Stop at the next step on the signal, an unload, or a lost device.
+            let stop = || js::aborted(signal.as_ref()) || state.borrow().should_stop();
+            let result = EngineState::chat(&mut loaded, &request_json, &WebHost, &mut emit, &stop).await;
+            state
+                .borrow_mut()
+                .finish_chat(loaded, result)
+                .map(JsValue::from)
+                .map_err(js_error)
         })
     }
 
     /// Drop the model and its memory. During a `chat`, the chat rejects with
     /// `aborted` and the model is dropped when it unwinds.
     pub fn unload(&self) {
-        let mut s = self.state.borrow_mut();
-        if s.busy {
-            s.unload_requested = true;
-            return;
-        }
-        if s.model.take().is_some() {
-            s.device.release_unused();
-        }
+        self.state.borrow_mut().unload();
     }
 }

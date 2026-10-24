@@ -28,6 +28,10 @@ Natively the crate is empty on purpose: all its dependencies are wasm32-only,
 so `cargo build --workspace` never turns on `bfi-core/webgpu` for the native
 `bfi` binary.
 
+The engine itself — the state machine, load, chat and `contextFor` — is
+`crates/bfi-engine`, shared with `crates/bfi-node` (the same `BfiEngine` class
+as a native Node addon); this crate is its wasm-bindgen face.
+
 ## API
 
 ```ts

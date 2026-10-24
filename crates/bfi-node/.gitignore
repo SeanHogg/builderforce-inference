@@ -1,0 +1,3 @@
+# Built addons and their stamps (node build.mjs); the bfi-node workflow uploads them per platform.
+bfi_node.*.node
+.bfi-build-stamp.*.json

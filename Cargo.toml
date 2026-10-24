@@ -16,12 +16,37 @@ members = [
     "crates/bfi-runtime",
     "crates/bfi-server",
     "crates/bfi",
+    "crates/bfi-engine",
+    "crates/bfi-web",
+    "crates/bfi-node",
+    "app/src-tauri",
+]
+# A bare `cargo build` / `cargo test` leaves out `bfi-node`: it turns on bfi-core's
+# `webgpu`, and building it beside the native `bfi` binary in one invocation would unify
+# that feature into `bfi` too. Build it on its own (`node crates/bfi-node/build.mjs`).
+default-members = [
+    "crates/bf-index",
+    "crates/bf-context",
+    "crates/bf-compress",
+    "crates/bf-memory",
+    "crates/bf-mcp",
+    "crates/bf-local",
+    "crates/bf-teach",
+    "crates/bf-vault",
+    "crates/bf-cloud",
+    "crates/bfi-gguf",
+    "crates/bfi-core",
+    "crates/bfi-models",
+    "crates/bfi-runtime",
+    "crates/bfi-server",
+    "crates/bfi",
+    "crates/bfi-engine",
     "crates/bfi-web",
     "app/src-tauri",
 ]
 
 [workspace.package]
-version = "2026.10.11"
+version = "2026.10.12"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/SeanHogg/builderforce-inference"
