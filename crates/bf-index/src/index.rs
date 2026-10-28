@@ -70,6 +70,15 @@ pub struct RefReport {
 
 type VectorCache = Arc<Vec<(i64, String, Vec<f32>)>>;
 
+/// A cosine score's 1e-4 bucket — `Math.round(score / 1e-4)` as builderforce-memory's
+/// `quantizeScore` computes it (half rounds up). NaN sorts last.
+fn dense_bucket(score: f32) -> i64 {
+    if score.is_nan() {
+        return i64::MIN;
+    }
+    (f64::from(score) / 1e-4 + 0.5).floor() as i64
+}
+
 pub struct Index {
     root: PathBuf,
     store: Mutex<Store>,
@@ -284,13 +293,15 @@ impl Index {
             return Ok(Vec::new());
         }
         let q = embedder.embed(&[query.to_string()])?.pop().unwrap_or_default();
-        let mut scored: Vec<(f32, i64)> = cache
+        // The shared total order (builderforce-memory `compareHits`): score descending,
+        // quantized to 1e-4 so float noise cannot flip a near-tie, then path, then id.
+        let mut scored: Vec<(i64, &str, i64)> = cache
             .iter()
             .filter(|(_, path, _)| prefix.map(|p| path.starts_with(p)).unwrap_or(true))
-            .map(|(id, _, v)| (embed::cosine(&q, v), *id))
+            .map(|(id, path, v)| (dense_bucket(embed::cosine(&q, v)), path.as_str(), *id))
             .collect();
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        Ok(scored.into_iter().take(CANDIDATES).map(|(_, id)| id).collect())
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)).then_with(|| a.2.cmp(&b.2)));
+        Ok(scored.into_iter().take(CANDIDATES).map(|(_, _, id)| id).collect())
     }
 
     fn vector_cache(&self) -> Result<VectorCache> {
