@@ -3,3 +3,6 @@ app/src-tauri/gen/
 spawn/src-tauri/gen/
 crates/bfi-web/pkg/
 crates/bfi-web/pkg-threads/
+
+# JS
+node_modules/
