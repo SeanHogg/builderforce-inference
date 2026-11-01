@@ -1,7 +1,9 @@
 //! Which processes belong to the program the app launched: the launched process, its
-//! descendants, and any process with the same executable name (many Windows apps hand off
-//! to another instance on start). Recording and replay act only inside this scope — never
+//! descendants, and any process with the same executable name (many apps hand off to
+//! another instance on start). Recording and replay act only inside this scope — never
 //! in the rest of the desktop, and never in Synapse itself.
+//!
+//! Cross-platform: `sysinfo` reads the process table on Windows, macOS and Linux alike.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -85,5 +87,28 @@ impl Scope {
     pub fn root_alive(&mut self) -> bool {
         self.refresh_if_stale();
         self.sys.process(Pid::from_u32(self.root)).is_some() || !self.allowed.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scope_contains_the_launched_process_and_its_children() {
+        // A shell outlives the test in every environment, so its pid and its own pid are
+        // always a live process tree to scope.
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(if cfg!(windows) { "cmd /c ping -n 30 127.0.0.1 >NUL" } else { "sleep 30" })
+            .spawn()
+            .expect("spawn a process to scope");
+        let pid = child.id();
+        let mut scope = Scope::new(pid, "nonexistent-binary-name-bf-teach-test");
+        assert!(scope.contains(pid), "the launched root pid is in scope");
+        assert!(scope.pids().contains(&pid));
+        assert!(scope.root_alive());
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }

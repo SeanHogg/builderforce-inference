@@ -1,8 +1,10 @@
 //! A screenshot per recorded step, so review shows what the screen looked like. Scaled
 //! down and JPEG-compressed: these are for a person to recognise the moment, not pixels to
 //! replay from.
+//!
+//! Cross-platform: `xcap` captures the monitor on Windows, macOS and Linux alike, so every
+//! platform implementation shares this.
 
-use super::err;
 use anyhow::Result;
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;

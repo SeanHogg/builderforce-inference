@@ -1,6 +1,6 @@
 [package]
 name = "bf-teach"
-description = "Record a program's UI actions as semantic steps and replay Train Once skills (Windows UI Automation first)"
+description = "Record a program's UI actions as semantic steps and replay Train Once skills (Windows UI Automation, macOS Accessibility)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,17 +10,26 @@ repository.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 rand.workspace = true
+# Process scoping and screenshots are cross-platform (Windows, macOS, Linux), so they
+# live in the common dependencies; the platform crates below are per-OS.
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+xcap = "0.9"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 [dev-dependencies]
 serde_json.workspace = true
 
-# Everything that touches the desktop is per-platform. Windows (UI Automation) is the
-# first platform; elsewhere the crate builds and reports "not supported yet", so macOS
-# and Linux builds of the app stay green.
+# Everything that touches the desktop is per-platform. Windows (UI Automation) and macOS
+# (Accessibility + CGEvent) have full implementations; elsewhere the crate builds and
+# reports "not supported yet", so Linux builds of the app stay green.
 [target.'cfg(windows)'.dependencies]
 uiautomation = "0.25"
 rdev = "0.5"
 enigo = "0.6"
-xcap = "0.9"
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
-sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+accessibility = "0.3"
+accessibility-sys = "0.3"
+cocoa-foundation = "0.2"
+core-graphics = "0.24"
+objc = "0.2"
