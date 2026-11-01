@@ -1,15 +1,17 @@
-//! The ONE global input hook. Windows allows a process one `rdev::listen` loop, and it
-//! never returns, so it is started once and fans events out to whoever is subscribed —
-//! the recorder (what the person does) and replay (the Esc takeover).
+//! The ONE global input hook, cross-platform: `rdev` delivers the person's clicks and keys
+//! on Windows, macOS and X11 alike, so every platform implementation shares this module.
 //!
-//! Only events that matter leave this module: left clicks with their position and key
-//! presses with the modifier state. Mouse movement is kept here, as the position of the
-//! next click, and never forwarded.
+//! `rdev` allows a process one `listen` loop, and it never returns, so it is started once
+//! and fans events out to whoever is subscribed — the recorder (what the person does) and
+//! replay (the Esc takeover). Only events that matter leave this module: left clicks with
+//! their position and key presses with the modifier state. Mouse movement is kept here,
+//! as the position of the next click, and never forwarded.
 
 use rdev::{Button, EventType, Key};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub enum Input {
@@ -17,34 +19,51 @@ pub enum Input {
     Key { key: Key, text: Option<String>, ctrl: bool, alt: bool, shift: bool, meta: bool },
 }
 
-static SUBSCRIBERS: Mutex<Vec<Sender<Input>>> = Mutex::new(Vec::new());
+/// Backlog of observed input, drained by `next` with a timeout.
+static QUEUE: Mutex<VecDeque<Input>> = Mutex::new(VecDeque::new());
+static WAKE: Condvar = Condvar::new();
 static STARTED: OnceLock<()> = OnceLock::new();
 /// Set while replay is injecting input, so the hook does not report the skill's own
 /// keystrokes as the person's (an injected Esc must not stop the run).
 static INJECTING: AtomicBool = AtomicBool::new(false);
 
-pub fn subscribe() -> Receiver<Input> {
+/// Ensure the listen loop is running and the hook is allowed to observe input.
+pub fn subscribe() {
     STARTED.get_or_init(|| {
         let _ = std::thread::Builder::new().name("bf-input-hook".into()).spawn(listen);
     });
-    let (tx, rx) = channel();
-    SUBSCRIBERS.lock().unwrap().push(tx);
-    rx
+}
+
+/// The next observed input, waiting up to `timeout`. `None` on timeout.
+pub fn next(timeout: Duration) -> Result<Input, std::sync::mpsc::RecvTimeoutError> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut q = QUEUE.lock().unwrap();
+    loop {
+        if let Some(ev) = q.pop_front() {
+            return Ok(ev);
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Err(std::sync::mpsc::RecvTimeoutError::Timeout);
+        }
+        let (guard, _) = WAKE.wait_timeout(q, deadline - now).unwrap();
+        q = guard;
+    }
 }
 
 /// Run `f` with the hook ignoring input, for input replay generates itself.
 pub fn injecting<T>(f: impl FnOnce() -> T) -> T {
     INJECTING.store(true, Ordering::SeqCst);
     let out = f();
-    // SendInput is asynchronous: give the hook time to see (and drop) the last event.
-    std::thread::sleep(std::time::Duration::from_millis(60));
+    // Injected events are asynchronous: give the hook time to see (and drop) the last one.
+    std::thread::sleep(Duration::from_millis(60));
     INJECTING.store(false, Ordering::SeqCst);
     out
 }
 
 fn publish(input: Input) {
-    // A dropped receiver is a finished recording or run: forget it.
-    SUBSCRIBERS.lock().unwrap().retain(|tx| tx.send(input.clone()).is_ok());
+    QUEUE.lock().unwrap().push_back(input);
+    WAKE.notify_one();
 }
 
 fn listen() {

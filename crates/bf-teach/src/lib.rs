@@ -23,6 +23,8 @@ pub mod platform;
 pub mod procs;
 pub mod shot;
 
+pub(crate) mod input;
+
 pub use engine::{run_skill, start_recording, Recording};
 pub use model::StepOutcome;
 

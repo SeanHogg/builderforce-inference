@@ -28,8 +28,9 @@ rdev = "0.5"
 enigo = "0.6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-accessibility = "0.3"
-accessibility-sys = "0.3"
-cocoa-foundation = "0.2"
+accessibility = "0.2"
+accessibility-sys = "0.2"
+cocoa = "0.25"
+core-foundation = "0.10"
 core-graphics = "0.24"
 objc = "0.2"

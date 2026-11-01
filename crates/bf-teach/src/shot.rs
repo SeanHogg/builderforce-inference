@@ -5,7 +5,7 @@
 //! Cross-platform: `xcap` captures the monitor on Windows, macOS and Linux alike, so every
 //! platform implementation shares this.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::DynamicImage;
@@ -13,6 +13,10 @@ use std::path::Path;
 
 const MAX_WIDTH: u32 = 1280;
 const QUALITY: u8 = 70;
+
+fn err<E: std::fmt::Debug>(e: E) -> anyhow::Error {
+    anyhow!("{e:?}")
+}
 
 /// Capture the monitor containing (`x`, `y`) into `dir/<name>.jpg`. Returns the file name.
 pub fn capture(x: i32, y: i32, dir: &Path, name: &str) -> Result<String> {

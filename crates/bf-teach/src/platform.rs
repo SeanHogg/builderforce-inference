@@ -58,6 +58,9 @@ impl KeyName {
 /// A UI element the platform can act on. Opaque to the engine: only the platform that
 /// created it can drive it, and [`Platform`] is how the engine asks.
 pub trait Element: Send + Any {
+    /// Downcast back to the platform's concrete element type (the platform implementation
+    /// only ever receives elements it created).
+    fn as_any(&self) -> &dyn Any;
     /// A password field: recorded and replayed, never read back.
     fn is_password(&self) -> bool;
     /// The field's own value, when it exposes one.
@@ -79,6 +82,7 @@ pub trait Element: Send + Any {
 
 /// A top-level window of the launched program.
 pub trait Window: Send + Any {
+    fn as_any(&self) -> &dyn Any;
     fn title(&self) -> &str;
     /// Screen coordinates of the window's top-left, so a recorded relative point becomes
     /// an absolute one again.
@@ -91,6 +95,9 @@ pub trait Window: Send + Any {
 /// and the accessibility APIs they call are thread-affine on every platform this crate
 /// supports, so the platform object is created on that thread and never moved off it.
 pub trait Platform: Send {
+    /// The platform's own name — "windows", "macos" — what [`selected_name`] returns here.
+    fn name(&self) -> &'static str;
+
     /// Begin observing the person's input. Events arrive through [`Self::poll`], which
     /// blocks up to `timeout` and returns `None` when nothing happened.
     fn subscribe(&mut self) -> Result<()>;
@@ -167,6 +174,9 @@ pub fn selected_name() -> &'static str {
 pub struct Unsupported;
 
 impl Platform for Unsupported {
+    fn name(&self) -> &'static str {
+        "unsupported"
+    }
     fn subscribe(&mut self) -> Result<()> {
         anyhow::bail!("recording and replay need Windows or macOS; this platform has no desktop automation yet")
     }

@@ -90,6 +90,13 @@ impl Scope {
     }
 }
 
+/// The executable name of a running process, for element descriptions.
+pub fn name_of(pid: u32) -> Option<String> {
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
+    sys.process(Pid::from_u32(pid)).map(|p| p.name().to_string_lossy().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

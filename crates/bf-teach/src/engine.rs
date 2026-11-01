@@ -140,7 +140,7 @@ fn record_loop(ctx: Ctx, stop: &AtomicBool) -> Result<()> {
                 if let Some(t) = typing.take() {
                     flush(t, &mut push, &mut platform);
                 }
-                let target = el.describe(Some((x, y)), &scope.name(pid));
+                let target = platform.describe_element(el.as_ref(), Some((x, y)), &scope.name(pid));
                 push(Action::Click { target }, (x, y), &mut platform);
             }
             Observed::Key { key, text, ctrl, alt, shift, meta } => {
@@ -178,7 +178,7 @@ fn record_loop(ctx: Ctx, stop: &AtomicBool) -> Result<()> {
                     flush(t, &mut push, &mut platform);
                 }
                 let at = el.centre();
-                let target = el.describe(None, &scope.name(pid));
+                let target = platform.describe_element(el.as_ref(), None, &scope.name(pid));
                 push(Action::Keys { keys: label, target: Some(target) }, at, &mut platform);
             }
         }

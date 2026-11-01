@@ -1,9 +1,7 @@
 //! Windows: the [`Platform`] implementation built on UI Automation (element identity),
 //! `rdev` (input observation) and `SendInput` via enigo (injection).
 
-pub(crate) mod input;
-pub(crate) mod uia;
-
+use crate::input;
 use crate::platform::{Element, KeyName, Observed, Platform, Window};
 use crate::{procs, shot};
 use anyhow::{anyhow, Result};
@@ -32,6 +30,7 @@ impl Platform for WinPlatform {
     }
 
     fn subscribe(&mut self) -> Result<()> {
+        input::subscribe();
         Ok(())
     }
 
