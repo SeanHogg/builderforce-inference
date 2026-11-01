@@ -69,10 +69,19 @@ pub async fn api_tags() -> Json<Value> {
 
 pub async fn api_ps(State(state): State<AppState>) -> Json<Value> {
     let models = match state.inner.engine.lock().as_ref() {
-        Some(loaded) => vec![json!({ "name": loaded.name, "model": loaded.name })],
+        Some(loaded) => vec![ps_model_entry(&loaded.name, loaded.engine.n_ctx())],
         None => Vec::new(),
     };
     Json(json!({ "models": models }))
+}
+
+/// One `/api/ps` row. `context_length` is the loaded engine's window.
+fn ps_model_entry(name: &str, context_length: usize) -> serde_json::Value {
+    json!({
+        "name": name,
+        "model": name,
+        "context_length": context_length,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -379,11 +388,7 @@ pub async fn v1_messages(State(state): State<AppState>, Json(req): Json<Anthropi
 pub async fn api_chat(State(state): State<AppState>, Json(req): Json<OllamaChatRequest>) -> Response {
     let model = req.model.clone();
     let messages = to_chat_messages(&req.messages);
-    let (temperature, max_tokens) = match &req.options {
-        Some(o) => (o.temperature, o.num_predict),
-        None => (None, None),
-    };
-    let params = sample_params(max_tokens, temperature);
+    let params = ollama_params(&req.options);
     match generate_chat(&state, &model, &messages, params).await {
         Ok((name, text)) => {
             if req.stream {
@@ -415,11 +420,7 @@ pub async fn api_chat(State(state): State<AppState>, Json(req): Json<OllamaChatR
 
 pub async fn api_generate(State(state): State<AppState>, Json(req): Json<OllamaGenerateRequest>) -> Response {
     let model = req.model.clone();
-    let (temperature, max_tokens) = match &req.options {
-        Some(o) => (o.temperature, o.num_predict),
-        None => (None, None),
-    };
-    let params = sample_params(max_tokens, temperature);
+    let params = ollama_params(&req.options);
     match generate_raw(&state, &model, req.prompt, params).await {
         Ok((name, text)) => {
             if req.stream {
@@ -459,23 +460,34 @@ pub async fn api_show(Json(req): Json<ModelNameRequest>) -> Response {
             .into_response();
     }
     match installed().into_iter().find(|m| m.name == name) {
-        Some(m) => Json(json!({
-            "modelfile": "",
-            "parameters": "",
-            "template": "",
-            "details": {
-                "parent_model": "",
-                "format": "gguf",
-                "family": "bfi",
-                "parameter_size": "",
-                "quantization_level": ""
-            },
-            "model_info": {},
-            "modified_at": "",
-            "name": m.name,
-            "size": m.size
-        }))
-        .into_response(),
+        Some(m) => {
+            // The trained window from the GGUF header, which on this server equals the
+            // loaded Engine::n_ctx().
+            let mut model_info = serde_json::Map::new();
+            if let Some((key, value)) = bfi_gguf::ModelHeader::open(&m.path)
+                .ok()
+                .and_then(|h| context_length_entry(&h))
+            {
+                model_info.insert(key, json!(value));
+            }
+            Json(json!({
+                "modelfile": "",
+                "parameters": "",
+                "template": "",
+                "details": {
+                    "parent_model": "",
+                    "format": "gguf",
+                    "family": "bfi",
+                    "parameter_size": "",
+                    "quantization_level": ""
+                },
+                "model_info": model_info,
+                "modified_at": "",
+                "name": m.name,
+                "size": m.size
+            }))
+            .into_response()
+        }
         None => (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": format!("model '{name}' not found") })),
@@ -656,6 +668,13 @@ fn resolve_model(name: &str) -> PathBuf {
     }
 }
 
+/// The `{arch}.context_length` GGUF entry advertised by `/api/show`, when present.
+fn context_length_entry(header: &bfi_gguf::ModelHeader) -> Option<(String, u64)> {
+    let arch = header.architecture()?;
+    let value = header.arch_u64("context_length")?;
+    Some((format!("{arch}.context_length"), value))
+}
+
 fn apply_output_constraint(
     params: &mut SampleParams,
     c: OutputConstraint,
@@ -680,6 +699,14 @@ fn sample_params(max_tokens: Option<u32>, temperature: Option<f32>) -> SamplePar
         max_tokens: max_tokens.unwrap_or(256),
         temperature: temperature.unwrap_or(0.8),
         ..SampleParams::default()
+    }
+}
+
+/// Sampling params from Ollama `options` (`num_predict`, `temperature`).
+fn ollama_params(options: &Option<OllamaOptions>) -> SampleParams {
+    match options {
+        Some(o) => sample_params(o.num_predict, o.temperature),
+        None => sample_params(None, None),
     }
 }
 
@@ -909,6 +936,59 @@ fn pull_ndjson_body() -> String {
 mod tests {
     use super::*;
     use bfi_runtime::ToolChoice;
+
+    #[test]
+    fn ollama_params_maps_options_and_applies_defaults() {
+        let p = ollama_params(&Some(OllamaOptions { temperature: Some(0.3), num_predict: Some(64) }));
+        assert_eq!(p.max_tokens, 64);
+        assert_eq!(p.temperature, 0.3);
+
+        let p = ollama_params(&None);
+        assert_eq!(p.max_tokens, 256);
+        assert_eq!(p.temperature, 0.8);
+    }
+
+    #[test]
+    fn ollama_request_with_num_ctx_still_parses() {
+        let req: OllamaChatRequest = serde_json::from_str(
+            r#"{"model":"m","options":{"num_ctx":8192,"temperature":0.5}}"#,
+        )
+        .unwrap();
+        assert_eq!(ollama_params(&req.options).temperature, 0.5);
+    }
+
+    #[test]
+    fn ps_model_entry_reports_context_length() {
+        let v = ps_model_entry("m", 32768);
+        assert_eq!(v["name"], "m");
+        assert_eq!(v["model"], "m");
+        assert_eq!(v["context_length"], 32768);
+    }
+
+    fn header_with(meta: &[(&str, bfi_gguf::MetaValue)]) -> bfi_gguf::ModelHeader {
+        bfi_gguf::ModelHeader {
+            version: 3,
+            alignment: 32,
+            metadata: meta.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+            tensors: Vec::new(),
+            tensor_data_offset: 0,
+        }
+    }
+
+    #[test]
+    fn context_length_entry_reads_arch_key() {
+        let h = header_with(&[
+            ("general.architecture", bfi_gguf::MetaValue::String("qwen3".into())),
+            ("qwen3.context_length", bfi_gguf::MetaValue::U32(32768)),
+        ]);
+        assert_eq!(context_length_entry(&h), Some(("qwen3.context_length".to_string(), 32768)));
+    }
+
+    #[test]
+    fn context_length_entry_none_when_key_missing() {
+        let h = header_with(&[("general.architecture", bfi_gguf::MetaValue::String("qwen3".into()))]);
+        assert_eq!(context_length_entry(&h), None);
+    }
 
     #[test]
     fn apply_constraint_json_object_sets_flag() {
