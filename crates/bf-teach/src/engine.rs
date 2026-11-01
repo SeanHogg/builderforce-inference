@@ -138,10 +138,10 @@ fn record_loop(ctx: Ctx, stop: &AtomicBool) -> Result<()> {
                 let Some(el) = platform.element_at(x, y) else { continue };
                 let Some(pid) = el.pid().filter(|p| scope.contains(*p)) else { continue };
                 if let Some(t) = typing.take() {
-                    flush(t, &mut push, &mut platform);
+                    flush(t, &mut push, platform.as_mut());
                 }
                 let target = platform.describe_element(el.as_ref(), Some((x, y)), &scope.name(pid));
-                push(Action::Click { target }, (x, y), &mut platform);
+                push(Action::Click { target }, (x, y), platform.as_mut());
             }
             Observed::Key { key, text, ctrl, alt, shift, meta } => {
                 let Some(el) = platform.focused_element() else { continue };
@@ -151,7 +151,7 @@ fn record_loop(ctx: Ctx, stop: &AtomicBool) -> Result<()> {
                     .as_ref()
                     .is_some_and(|t| !platform.same_element(t.element.as_ref(), el.as_ref()));
                 if moved {
-                    flush(typing.take().expect("checked"), &mut push, &mut platform);
+                    flush(typing.take().expect("checked"), &mut push, platform.as_mut());
                 }
                 let secret = el.is_password();
                 let printable = text.as_deref().filter(|s| !s.is_empty() && s.chars().all(|c| !c.is_control()));
@@ -175,16 +175,16 @@ fn record_loop(ctx: Ctx, stop: &AtomicBool) -> Result<()> {
                 }
                 let Some(label) = key_label(key, ctrl, alt, shift, meta) else { continue };
                 if let Some(t) = typing.take() {
-                    flush(t, &mut push, &mut platform);
+                    flush(t, &mut push, platform.as_mut());
                 }
                 let at = el.centre();
                 let target = platform.describe_element(el.as_ref(), None, &scope.name(pid));
-                push(Action::Keys { keys: label, target: Some(target) }, at, &mut platform);
+                push(Action::Keys { keys: label, target: Some(target) }, at, platform.as_mut());
             }
         }
     }
     if let Some(t) = typing.take() {
-        flush(t, &mut push, &mut platform);
+        flush(t, &mut push, platform.as_mut());
     }
     Ok(())
 }
@@ -394,7 +394,7 @@ impl Runner<'_> {
                 let (win, el) = self.locate(target)?;
                 match (el, win) {
                     (Some(el), _) => {
-                        if self.platform.invoke(el.as_ref()) || self.platform.click_element(el.as_ref()) {
+                        if el.invoke() || el.click() {
                             Ok((StepOutcome::Ok, None))
                         } else {
                             Err(StepError::Failed(format!("could not click “{}”", target.label())))
@@ -415,13 +415,13 @@ impl Runner<'_> {
                 let (win, el) = self.locate(target)?;
                 match (el, win) {
                     (Some(el), _) => {
-                        if self.platform.set_value(el.as_ref(), &text) {
+                        if el.set_value(&text) {
                             // Password fields do not read back; every other value is checked.
                             if secret || el.value().is_some_and(|v| v == text) {
                                 return Ok((StepOutcome::Ok, None));
                             }
                         }
-                        let _ = self.platform.focus(el.as_ref());
+                        let _ = el.focus();
                         self.replace_text(&text)?;
                         Ok((StepOutcome::Ok, Some("typed".into())))
                     }
@@ -436,7 +436,7 @@ impl Runner<'_> {
             SkillAction::Keys { keys, target } => {
                 if let Some(t) = target {
                     if let (_, Some(el)) = self.locate(t)? {
-                        let _ = self.platform.focus(el.as_ref());
+                        let _ = el.focus();
                     }
                 }
                 self.platform.send_keys(keys).map_err(|e| StepError::Failed(format!("{e:#}")))?;

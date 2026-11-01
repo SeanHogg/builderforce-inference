@@ -57,9 +57,12 @@ impl KeyName {
 
 /// A UI element the platform can act on. Opaque to the engine: only the platform that
 /// created it can drive it, and [`Platform`] is how the engine asks.
-pub trait Element: Send + Any {
+pub trait Element: Any {
     /// Downcast back to the platform's concrete element type (the platform implementation
     /// only ever receives elements it created).
+    ///
+    /// Elements are not `Send` (UIA handles and AXUIElement refs are thread-affine); the
+    /// record/replay engine uses them on the platform thread that created them.
     fn as_any(&self) -> &dyn Any;
     /// A password field: recorded and replayed, never read back.
     fn is_password(&self) -> bool;
@@ -81,7 +84,8 @@ pub trait Element: Send + Any {
 }
 
 /// A top-level window of the launched program.
-pub trait Window: Send + Any {
+pub trait Window: Any {
+    /// Downcast back to the platform's concrete window type; like [`Element`], not `Send`.
     fn as_any(&self) -> &dyn Any;
     fn title(&self) -> &str;
     /// Screen coordinates of the window's top-left, so a recorded relative point becomes

@@ -1,6 +1,8 @@
 //! Windows: the [`Platform`] implementation built on UI Automation (element identity),
 //! `rdev` (input observation) and `SendInput` via enigo (injection).
 
+mod uia;
+
 use crate::input;
 use crate::platform::{Element, KeyName, Observed, Platform, Window};
 use crate::{procs, shot};
@@ -79,7 +81,7 @@ impl Platform for WinPlatform {
     fn same_element(&mut self, a: &dyn Element, b: &dyn Element) -> bool {
         let (Some(a), Some(b)) = (a.as_any().downcast_ref::<WinEl>(), b.as_any().downcast_ref::<WinEl>()) else { return false };
         match uia::Uia::new() {
-            Ok(uia) => uia.same(&a.0, &b.0),
+            Ok(uia) => uia::same(&a.0, &b.0, &uia),
             Err(_) => false,
         }
     }
@@ -102,40 +104,58 @@ impl Platform for WinPlatform {
     fn click_at(&mut self, x: i32, y: i32) -> Result<()> {
         use enigo::{Button, Coordinate, Direction, Enigo, Mouse, Settings};
         let mut enigo = Enigo::new(&Settings::default()).map_err(err)?;
+        let mut out = Ok(());
         self.injecting(&mut || {
-            enigo.move_mouse(x, y, Coordinate::Abs).and_then(|_| enigo.button(Button::Left, Direction::Click)).map_err(err)
-        })
+            out = enigo
+                .move_mouse(x, y, Coordinate::Abs)
+                .and_then(|_| enigo.button(Button::Left, Direction::Click))
+                .map_err(err);
+        });
+        out
     }
 
     fn replace_text(&mut self, text: &str) -> Result<()> {
         use enigo::{Direction, Enigo, Key, Keyboard, Settings};
         let mut enigo = Enigo::new(&Settings::default()).map_err(err)?;
+        let mut out = Ok(());
         self.injecting(&mut || {
-            enigo.key(Key::Control, Direction::Press).map_err(err)?;
-            enigo.key(Key::Unicode('a'), Direction::Click).map_err(err)?;
-            enigo.key(Key::Control, Direction::Release).map_err(err)?;
-            if text.is_empty() {
-                enigo.key(Key::Delete, Direction::Click).map_err(err)
-            } else {
-                enigo.text(text).map_err(err)
-            }
-        })
+            out = (|| {
+                enigo.key(Key::Control, Direction::Press).map_err(err)?;
+                enigo.key(Key::Unicode('a'), Direction::Click).map_err(err)?;
+                enigo.key(Key::Control, Direction::Release).map_err(err)?;
+                if text.is_empty() {
+                    enigo.key(Key::Delete, Direction::Click).map_err(err)?;
+                } else {
+                    enigo.text(text).map_err(err)?;
+                }
+                Ok(())
+            })();
+        });
+        out
     }
 
     fn send_keys(&mut self, combo: &str) -> Result<()> {
         use enigo::{Direction, Enigo, Keyboard, Settings};
         let (mods, key) = parse_combo(combo).ok_or_else(|| anyhow!("unknown key “{combo}”"))?;
         let mut enigo = Enigo::new(&Settings::default()).map_err(err)?;
+        let mut out = Ok(());
         self.injecting(&mut || {
             for m in &mods {
-                enigo.key(*m, Direction::Press).map_err(err)?;
+                if let Err(e) = enigo.key(*m, Direction::Press).map_err(err) {
+                    out = Err(e);
+                    return;
+                }
             }
             let r = enigo.key(key, Direction::Click).map_err(err);
             for m in mods.iter().rev() {
-                enigo.key(*m, Direction::Release).map_err(err)?;
+                if let Err(e) = enigo.key(*m, Direction::Release).map_err(err) {
+                    out = Err(e);
+                    return;
+                }
             }
-            r
-        })
+            out = r;
+        });
+        out
     }
 
     fn capture(&mut self, x: i32, y: i32, dir: &Path, name: &str) -> Result<String> {

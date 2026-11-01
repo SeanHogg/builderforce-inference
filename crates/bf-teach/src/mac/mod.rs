@@ -99,8 +99,8 @@ fn unicode(c: char) -> Result<()> {
 /// A left click at a screen point, while the input hook ignores injected input.
 pub(crate) fn click_at(x: i32, y: i32) -> Result<()> {
     input::injecting(|| {
-        let src = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
-            .ok_or_else(|| anyhow!("no CGEventSource"))?;
+        let src =
+            CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok_or_else(|| anyhow!("no CGEventSource"))?;
         let point = CGPoint::new(f64::from(x), f64::from(y));
         for t in [CGEventType::LeftMouseDown, CGEventType::LeftMouseUp] {
             let ev = CGEvent::new_mouse_event(&src, t, point, CGMouseButton::Left)
@@ -182,9 +182,9 @@ impl Platform for MacPlatform {
         let win_pid = pid_of(&el.0).and_then(procs::name_of);
         let (px, py) = click.unwrap_or_else(|| centre_of(&el.0));
         crate::model::ElementRef {
-            name: attr_string(&el.0, "AXTitle").unwrap_or_default(),
-            automation_id: attr_string(&el.0, "AXIdentifier").unwrap_or_default(),
-            control_type: attr_string(&el.0, "AXRole").unwrap_or_default(),
+            name: title_of(&el.0),
+            automation_id: identifier_of(&el.0),
+            control_type: role_of(&el.0),
             class_name: String::new(),
             window_title: win_title,
             process_name: if process_name.is_empty() { win_pid.unwrap_or_default() } else { process_name.to_string() },
@@ -204,13 +204,13 @@ impl Platform for MacPlatform {
         pids.iter()
             .filter_map(|&pid| {
                 let app = AXUIElement::application(pid as i32);
-                app.windows().ok().map(|ws| (pid, ws))
+                app.windows().ok().map(|ws| (ws))
             })
-            .flat_map(|(pid, ws)| {
+            .flat_map(|ws| {
                 ws.into_iter().filter_map(move |el| {
-                    let title = attr_string(&el, "AXTitle").unwrap_or_default();
+                    let title = title_of(&el);
                     let (x, y) = frame_of(&el)?.0;
-                    Some(Box::new(MacWindow { el, pid, title, origin: (x, y) }) as Box<dyn Window>)
+                    Some(Box::new(MacWindow { el, title, origin: (x, y) }) as Box<dyn Window>)
                 })
             })
             .collect()
@@ -272,6 +272,8 @@ impl Platform for MacPlatform {
     }
 }
 
+/// The rdev key mapping is shared with Windows ([`crate::win`]); macOS names differ from
+/// Windows only in the keys the person has, so it lives next to the only consumer.
 fn map_key(key: rdev::Key) -> KeyName {
     use rdev::Key;
     match key {
@@ -304,11 +306,24 @@ fn map_key(key: rdev::Key) -> KeyName {
     }
 }
 
-fn attr_string(el: &AXUIElement, name: &str) -> Option<String> {
-    el.attribute(&AXAttribute::new(&name.into()))
-        .ok()
-        .and_then(|v| v.to_string())
-        .filter(|s| s.len() <= MAX_ATTR_LEN)
+fn bounded(s: String) -> Option<String> {
+    if s.len() <= MAX_ATTR_LEN {
+        Some(s)
+    } else {
+        None
+    }
+}
+
+fn role_of(el: &AXUIElement) -> String {
+    el.role().ok().map(|r| r.to_string()).unwrap_or_default()
+}
+
+fn title_of(el: &AXUIElement) -> String {
+    el.title().ok().and_then(|t| bounded(t.to_string())).unwrap_or_default()
+}
+
+fn identifier_of(el: &AXUIElement) -> String {
+    el.identifier().ok().and_then(|i| bounded(i.to_string())).unwrap_or_default()
 }
 
 fn pid_of(el: &AXUIElement) -> Option<u32> {
@@ -317,23 +332,8 @@ fn pid_of(el: &AXUIElement) -> Option<u32> {
 
 /// ((x, y), (w, h)) of an element's frame.
 fn frame_of(el: &AXUIElement) -> Option<((i32, i32), (i32, i32))> {
-    let any = el.attribute(&AXAttribute::new(&"AXFrame".into())).ok()?;
-    let v = any.cast::<accessibility_sys::AXValueRef>().ok()?;
-    let mut rect = accessibility_sys::CGRect {
-        origin: accessibility_sys::CGPoint { x: 0.0, y: 0.0 },
-        size: accessibility_sys::CGSize { width: 0.0, height: 0.0 },
-    };
-    // SAFETY: `v` came from `AXUIElementCopyAttributeValue` for the `AXFrame` attribute,
-    // so it holds a CGRect.
-    unsafe {
-        if accessibility_sys::AXValueGetType(v) == accessibility_sys::AXValueType::CGRect
-            && accessibility_sys::AXValueGetValue(v, &mut rect)
-        {
-            Some(((rect.origin.x as i32, rect.origin.y as i32), (rect.size.width as i32, rect.size.height as i32)))
-        } else {
-            None
-        }
-    }
+    let v = el.frame().ok()?;
+    Some(((v.origin.x as i32, v.origin.y as i32), (v.size.width as i32, v.size.height as i32)))
 }
 
 fn centre_of(el: &AXUIElement) -> (i32, i32) {
@@ -353,11 +353,11 @@ fn window_of(el: &AXUIElement) -> Option<((i32, i32), String)> {
 }
 
 fn try_window(el: &AXUIElement) -> Option<((i32, i32), String)> {
-    let role = attr_string(el, "AXRole")?;
+    let role = role_of(el);
     if !role.contains("Window") && !role.contains("Sheet") && !role.contains("Drawer") {
         return None;
     }
-    let title = attr_string(el, "AXTitle").unwrap_or_default();
+    let title = title_of(el);
     let (origin, _) = frame_of(el)?;
     Some((origin, title))
 }
@@ -366,14 +366,14 @@ fn try_window(el: &AXUIElement) -> Option<((i32, i32), String)> {
 /// bounded.
 fn find_in(window: &AXUIElement, target: &crate::model::ElementRef) -> Option<AXUIElement> {
     let matches = |el: &AXUIElement| {
-        let role = attr_string(el, "AXRole").unwrap_or_default();
+        let role = role_of(el);
         if !role.is_empty() && !target.control_type.is_empty() && role != target.control_type {
             return false;
         }
         if !target.automation_id.is_empty() {
-            attr_string(el, "AXIdentifier").as_deref() == Some(target.automation_id.as_str())
+            identifier_of(el) == target.automation_id
         } else {
-            !target.name.is_empty() && attr_string(el, "AXTitle").as_deref() == Some(target.name.as_str())
+            !target.name.is_empty() && title_of(el) == target.name
         }
     };
     if matches(window) {
@@ -406,10 +406,10 @@ impl Element for MacEl {
     }
     fn is_password(&self) -> bool {
         // macOS exposes password fields as secure text fields; the subrole is the signal.
-        attr_string(&self.0, "AXSubrole").as_deref() == Some("AXSecureTextField")
+        self.0.subrole().ok().map(|s| s.to_string()).as_deref() == Some("AXSecureTextField")
     }
     fn value(&self) -> Option<String> {
-        attr_string(&self.0, "AXValue")
+        self.0.value().ok().and_then(|v| bounded(v.to_string()))
     }
     fn centre(&self) -> (i32, i32) {
         centre_of(&self.0)
@@ -426,16 +426,15 @@ impl Element for MacEl {
         click_at(x, y).is_ok()
     }
     fn set_value(&self, value: &str) -> bool {
-        self.0.set_value(&value.to_string()).is_ok()
+        self.0.set_value(value.to_string()).is_ok()
     }
     fn focus(&self) -> bool {
-        self.0.focus().is_ok()
+        self.0.set_focused(true).is_ok()
     }
 }
 
 struct MacWindow {
     el: AXUIElement,
-    pid: u32,
     title: String,
     origin: (i32, i32),
 }
@@ -450,9 +449,4 @@ impl Window for MacWindow {
     fn origin(&self) -> (i32, i32) {
         self.origin
     }
-}
-
-#[allow(dead_code)]
-fn _pid_of_window(w: &MacWindow) -> u32 {
-    w.pid
 }
