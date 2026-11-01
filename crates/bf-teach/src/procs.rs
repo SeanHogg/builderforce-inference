@@ -107,7 +107,11 @@ mod tests {
         // always a live process tree to scope.
         let mut child = std::process::Command::new("sh")
             .arg("-c")
-            .arg(if cfg!(windows) { "cmd /c ping -n 30 127.0.0.1 >NUL" } else { "sleep 30" })
+            // Use /dev/null, not the Windows NUL device: the command runs under `sh -c`
+            // (git-bash/MSYS), where `>NUL` is a real file named "NUL" but `/dev/null` is
+            // the null device (MSYS maps it to NUL on Windows). `>NUL` here is what left
+            // a stray NUL file in the working tree.
+            .arg(if cfg!(windows) { "cmd /c ping -n 30 127.0.0.1 >/dev/null" } else { "sleep 30" })
             .spawn()
             .expect("spawn a process to scope");
         let pid = child.id();
