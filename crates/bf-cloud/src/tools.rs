@@ -29,24 +29,28 @@ pub struct PlatformTool {
     /// Whether it changes anything. Absent (a tenant's own MCP server) counts as yes.
     #[serde(default)]
     pub mutates: Option<bool>,
+    #[serde(default)]
+    model_tool: Option<Value>,
+    #[serde(default)]
+    approval_required: Option<bool>,
 }
 
 impl PlatformTool {
     /// Whether running it needs the person's go-ahead.
     pub fn writes(&self) -> bool {
-        self.mutates != Some(false)
+        self.approval_required.unwrap_or(self.mutates != Some(false))
     }
 
     /// The tool as a completion request offers it to the model.
     pub fn as_function(&self) -> Value {
-        json!({
+        self.model_tool.clone().unwrap_or_else(|| json!({
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
                 "parameters": self.parameters.clone().unwrap_or_else(|| json!({ "type": "object", "properties": {} })),
             }
-        })
+        }))
     }
 }
 
@@ -55,7 +59,7 @@ impl Session {
     /// platform's `toolSurfaces.ts`).
     pub fn platform_tools(&self, surface: &str) -> Result<Vec<PlatformTool>, CloudError> {
         let v: Value = self
-            .gateway("GET", &format!("/mcp/tools?surface={surface}"), None, crate::TIMEOUT)?
+            .gateway("GET", &format!("/mcp/tools?surface={surface}&format=openai"), None, crate::TIMEOUT)?
             .into_json()
             .map_err(|e| CloudError::Unreachable(e.to_string()))?;
         Ok(serde_json::from_value(v.get("tools").cloned().unwrap_or(json!([]))).unwrap_or_default())
@@ -67,9 +71,12 @@ impl Session {
     pub fn call_platform_tool(&self, tool: &PlatformTool, arguments: Value) -> Result<String, CloudError> {
         let body = json!({ "extensionId": tool.extension_id, "tool": tool.tool, "arguments": arguments });
         let v: Value = self
-            .gateway("POST", "/mcp/call", Some(&body), CALL_TIMEOUT)?
+            .gateway("POST", "/mcp/call?format=openai", Some(&body), CALL_TIMEOUT)?
             .into_json()
             .map_err(|e| CloudError::Unreachable(e.to_string()))?;
+        if let Some(text) = v.get("modelText").and_then(Value::as_str) {
+            return Ok(text.to_owned());
+        }
         Ok(match v.get("result").unwrap_or(&v) {
             Value::String(s) => s.clone(),
             other => other.to_string(),
@@ -90,5 +97,19 @@ mod tests {
         assert!(external.writes());
         assert_eq!(external.as_function()["function"]["parameters"]["type"], "object");
         assert_eq!(read.as_function()["function"]["name"], "builtin_tasks_list");
+    }
+
+    #[test]
+    fn a_native_catalog_uses_the_platform_projection() {
+        let function = json!({ "type": "function", "function": {
+            "name": "builtin_tasks_list", "description": "List tasks",
+            "parameters": { "type": "object", "required": ["projectId"] }
+        } });
+        let tool: PlatformTool = serde_json::from_value(json!({
+            "extensionId": "builtin", "tool": "tasks.list", "name": "builtin_tasks_list",
+            "approvalRequired": false, "modelTool": function,
+        })).unwrap();
+        assert!(!tool.writes());
+        assert_eq!(tool.as_function(), function);
     }
 }
