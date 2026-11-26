@@ -622,22 +622,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "bf-mcp"
-version = "2026.10.12"
-dependencies = [
- "anyhow",
- "bf-vault",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "bf-memory"
 version = "2026.10.12"
 dependencies = [
  "anyhow",
- "bf-mcp",
  "serde",
  "serde_json",
 ]
@@ -7523,7 +7511,6 @@ dependencies = [
  "bf-cloud",
  "bf-context",
  "bf-local",
- "bf-mcp",
  "bf-memory",
  "bf-teach",
  "bf-vault",

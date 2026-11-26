@@ -10,14 +10,13 @@
 //! A tool that only reads runs at once; one that changes something waits for the person's
 //! Approve in the transcript ([`super::live`]).
 
-use super::brain_tools::Toolbox;
+use super::brain_tools::{label, Toolbox};
 use super::live::LiveReply;
 use super::Cloud;
 use crate::agents::Agents;
 use bf_cloud::llm::{ToolCall, Turn};
 use bf_cloud::{CloudError, Session};
 use bf_local::Local;
-use bf_mcp::Host;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,8 +39,7 @@ const SYSTEM: &str = "You are the Brain in Synapse, the person's Builderforce de
 Answer directly and concisely. You can see the conversation and, below, what the person's private \
 Evermind recalls about the question from their own tools on this machine — use it when it is relevant \
 and say so; never invent memories. You have the workspace's platform tools (`builtin_<domain>_<method>`: \
-projects, tickets, boards, specs, OKRs, and the workspace's connectors) and the tools of the MCP servers \
-the person connected to Synapse on this machine (`mcp_<connector>_<tool>`). Resolve names to ids with the \
+projects, tickets, boards, specs, OKRs, and the workspace's connectors). Resolve names to ids with the \
 list/get tools before acting. Read-only tools run at once; a tool that changes something is shown to the \
 person to approve, so call it directly when you have the details — if they decline you get `{\"cancelled\": true}`, \
 so adjust rather than retry. Never say you did something unless the tool returned success. Code work and \
@@ -124,7 +122,7 @@ enum Outcome {
     Failed(String),
 }
 
-fn run_tool(s: &Session, host: &Host, tools: &Toolbox, call: &ToolCall, progress: &Progress) -> Result<Outcome, CloudError> {
+fn run_tool(s: &Session, tools: &Toolbox, call: &ToolCall, progress: &Progress) -> Result<Outcome, CloudError> {
     let Some(tool) = tools.find(&call.name) else {
         return Ok(Outcome::Failed(format!("there is no tool named {}", call.name)));
     };
@@ -133,11 +131,12 @@ fn run_tool(s: &Session, host: &Host, tools: &Toolbox, call: &ToolCall, progress
         Ok(v @ Value::Object(_)) => v,
         _ => return Ok(Outcome::Failed(format!("the arguments for {} are not a JSON object", call.name))),
     };
-    if tool.writes() && !progress.approve(tool.label(), args.to_string()) {
+    let tool_label = label(&tool.name);
+    if tool.writes() && !progress.approve(tool_label.clone(), args.to_string()) {
         return Ok(Outcome::Declined);
     }
-    progress.update(|r| r.activity = Some(tool.label()));
-    let result = tool.run(s, host, args);
+    progress.update(|r| r.activity = Some(tool_label));
+    let result = s.call_platform_tool(tool, args);
     progress.update(|r| r.activity = None);
     match result {
         Ok(out) => Ok(Outcome::Ran(out.chars().take(RESULT_CHARS).collect())),
@@ -187,9 +186,8 @@ fn reply(progress: &Progress, agents: &Agents) -> Result<(), String> {
     prompt.extend(convo);
 
     // The tools, likewise: an unreachable catalog is an answer without them.
-    let host = progress.app.state::<Arc<Host>>().inner().clone();
     let local = progress.app.state::<Arc<Local>>().inner().clone();
-    let tools = Toolbox::gather(&s, &host).map_err(|e| cloud.fail(e))?;
+    let tools = Toolbox::gather(&s).map_err(|e| cloud.fail(e))?;
     let mut offered = tools.offered();
 
     let mut failures = 0;
@@ -209,7 +207,7 @@ fn reply(progress: &Progress, agents: &Agents) -> Result<(), String> {
             .collect();
         prompt.push(json!({ "role": "assistant", "content": turn.text, "tool_calls": calls }));
         for call in &turn.tool_calls {
-            let content = match run_tool(&s, &host, &tools, call, progress).map_err(|e| cloud.fail(e))? {
+            let content = match run_tool(&s, &tools, call, progress).map_err(|e| cloud.fail(e))? {
                 Outcome::Ran(out) => {
                     failures = 0;
                     out

@@ -1,11 +1,10 @@
-//! A client for one MCP server over the stdio transport (newline-delimited JSON-RPC 2.0),
+//! The private Evermind client over the stdio transport (newline-delimited JSON-RPC 2.0),
 //! started as a child process. One child, calls serialised; a child that died is restarted
 //! on the next call, and one that stopped answering is replaced rather than waited on.
 
 use crate::spec::LaunchSpec;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -19,18 +18,6 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 const START_TIMEOUT: Duration = Duration::from_secs(180);
 /// An ordinary call.
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// One tool a server advertises (`tools/list`).
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolInfo {
-    pub name: String,
-    pub description: String,
-    pub input_schema: Value,
-    /// The server says the tool only reads (`annotations.readOnlyHint`). Anything else
-    /// counts as changing something.
-    pub read_only: bool,
-}
 
 struct Connection {
     child: Child,
@@ -48,7 +35,7 @@ impl Drop for Connection {
 
 pub struct McpClient {
     spec: LaunchSpec,
-    /// What the server is called in errors ("the memory server", "GitHub").
+    /// What the server is called in errors ("the memory server").
     label: String,
     env: Mutex<Vec<(String, String)>>,
     conn: Mutex<Option<Connection>>,
@@ -90,25 +77,6 @@ impl McpClient {
         tool_result(self.rpc("tools/call", json!({ "name": tool, "arguments": args }), timeout)?)
     }
 
-    /// Every tool the server advertises, following `nextCursor` pages.
-    pub fn list_tools(&self) -> Result<Vec<ToolInfo>> {
-        let mut tools = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let params = match &cursor {
-                Some(c) => json!({ "cursor": c }),
-                None => json!({}),
-            };
-            let page = self.rpc("tools/list", params, CALL_TIMEOUT)?;
-            tools.extend(page.get("tools").and_then(Value::as_array).into_iter().flatten().filter_map(tool_info));
-            cursor = page.get("nextCursor").and_then(Value::as_str).filter(|c| !c.is_empty()).map(str::to_string);
-            if cursor.is_none() {
-                return Ok(tools);
-            }
-        }
-    }
-
-    /// One request, with one retry on a fresh child when the pipe broke.
     fn rpc(&self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
         let mut slot = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         for attempt in 0..2 {
@@ -167,15 +135,6 @@ impl McpClient {
         send(&mut conn.stdin, &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })).map_err(CallError::into_inner)?;
         Ok(conn)
     }
-}
-
-fn tool_info(t: &Value) -> Option<ToolInfo> {
-    Some(ToolInfo {
-        name: t.get("name")?.as_str()?.to_string(),
-        description: t.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
-        input_schema: t.get("inputSchema").cloned().unwrap_or_else(|| json!({ "type": "object", "properties": {} })),
-        read_only: t.pointer("/annotations/readOnlyHint").and_then(Value::as_bool) == Some(true),
-    })
 }
 
 #[derive(Debug)]
@@ -260,17 +219,6 @@ mod tests {
         assert_eq!(tool_result(parts).unwrap(), json!("a\nb"));
         let err = json!({ "content": [{ "type": "text", "text": "No skill \"x\"." }], "isError": true });
         assert_eq!(tool_result(err).unwrap_err().to_string(), "No skill \"x\".");
-    }
-
-    #[test]
-    fn a_listed_tool_reads_its_schema_and_read_only_hint() {
-        let t = tool_info(&json!({ "name": "search", "annotations": { "readOnlyHint": true } })).unwrap();
-        assert!(t.read_only);
-        assert_eq!(t.input_schema["type"], "object");
-        let w = tool_info(&json!({ "name": "write", "description": "d", "inputSchema": { "type": "object", "required": ["p"] } })).unwrap();
-        assert!(!w.read_only);
-        assert_eq!(w.input_schema["required"][0], "p");
-        assert!(tool_info(&json!({ "description": "nameless" })).is_none());
     }
 
     #[test]

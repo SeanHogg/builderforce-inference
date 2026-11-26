@@ -10,7 +10,7 @@ export const SETTINGS_GROUPS = [
   { key: "account", views: ["account"] },
   { key: "index", views: ["workspaces", "search", "activity"] },
   { key: "agents", views: ["teach", "skills", "runs"] },
-  { key: "tools", views: ["connect", "connectors"] },
+  { key: "tools", views: ["connect"] },
   { key: "models", views: ["models"] },
 ];
 

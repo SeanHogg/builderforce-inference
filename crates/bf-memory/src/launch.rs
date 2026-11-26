@@ -9,7 +9,7 @@
 //! 3. The published package through `npx`, with the same arguments the memory installer
 //!    writes into every host (`buildServerSpec` in memory-mcp's `install/server-spec.ts`).
 
-use bf_mcp::LaunchSpec;
+use crate::LaunchSpec;
 use std::path::{Path, PathBuf};
 
 pub const LAUNCH_ENV: &str = "SYNAPSE_MEMORY_MCP";

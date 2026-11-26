@@ -1,23 +1,19 @@
 //! Synapse — the context service with a window and a tray.
 //!
 //! The service (bf-context) starts with the app and keeps running while the window is
-//! closed; the tray reopens or quits it. Launched as `synapse mcp`, the same
-//! executable is an MCP stdio server instead (what Claude Code / Cursor are pointed at),
-//! and it forwards to the running app's warm index when there is one.
+//! closed. The tray reopens or quits it.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agents;
 mod cloud;
-mod connectors;
 mod local;
 mod pool;
 mod tray;
 mod update;
 
 use bf_context::{api, paths, server, Registry};
-use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::sync::Arc;
 use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
@@ -27,7 +23,7 @@ struct AppState {
 }
 
 /// The ONE bridge from the UI to the service: every workspace operation is an `api` op,
-/// the same surface the HTTP and MCP transports expose.
+/// the same surface the loopback HTTP service exposes.
 #[tauri::command]
 async fn call(state: tauri::State<'_, AppState>, op: String, body: Option<Value>) -> Result<Value, String> {
     let reg = state.registry.clone();
@@ -37,42 +33,16 @@ async fn call(state: tauri::State<'_, AppState>, op: String, body: Option<Value>
         .map_err(|e| format!("{e:#}"))
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ConnectInfo {
-    executable: String,
-    claude_code: String,
-    mcp_json: String,
-}
-
-/// How to point Claude Code / Cursor / any MCP client at this machine's index.
-#[tauri::command]
-fn connect_info() -> Result<ConnectInfo, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?.to_string_lossy().into_owned();
-    let mcp_json = serde_json::to_string_pretty(&json!({
-        "mcpServers": { "synapse": { "command": exe, "args": ["mcp"] } }
-    }))
-    .map_err(|e| e.to_string())?;
-    Ok(ConnectInfo { claude_code: format!("claude mcp add synapse -- \"{exe}\" mcp"), executable: exe, mcp_json })
-}
-
 #[tauri::command]
 async fn check_update() -> Result<update::UpdateInfo, String> {
     tauri::async_runtime::spawn_blocking(update::check).await.map_err(|e| e.to_string())
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("mcp") {
-        let root = match args.iter().position(|a| a == "--root") {
-            Some(i) => args.get(i + 1).map(Into::into),
-            None => std::env::current_dir().ok(),
-        };
-        let code = match root.map(bf_context::mcp::run_stdio) {
-            Some(Ok(())) => 0,
-            _ => 1,
-        };
-        std::process::exit(code);
+    // Old editor configs may still invoke this command. Exit without opening the app.
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        eprintln!("Workspace MCP is provided by the Builderforce VS Code extension.");
+        std::process::exit(2);
     }
 
     let registry = Registry::new(paths::data_dir());
@@ -88,7 +58,6 @@ fn main() {
         .manage(AppState { registry })
         .invoke_handler(tauri::generate_handler![
             call,
-            connect_info,
             check_update,
             agents::commands::agents_state,
             agents::commands::agents_set_enabled,
@@ -136,12 +105,6 @@ fn main() {
             cloud::chat::chat_tool_decide,
             cloud::request::cloud_request,
             cloud::starter_model::evermind_fetch_model,
-            connectors::connectors_state,
-            connectors::connector_install,
-            connectors::connector_add,
-            connectors::connector_remove,
-            connectors::connector_set_enabled,
-            connectors::connector_refresh,
             local::local_state,
             local::local_pull,
             local::local_delete,
@@ -168,8 +131,6 @@ fn main() {
             agents.runs.set_relay(Arc::new(cloud::remote_approval::PhoneApprovals { cloud: cloud.clone(), agents: Arc::downgrade(&agents) }));
             app.manage(agents);
             app.manage(cloud);
-            // The MCP servers the person connected, for the Brain's tools.
-            app.manage(bf_mcp::Host::open(&paths::data_dir()));
             // Local models: the managed runtime, and the compatible endpoint if switched on.
             app.manage(bf_local::Local::open(&paths::data_dir()));
             Ok(())

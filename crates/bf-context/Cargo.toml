@@ -1,6 +1,6 @@
 [package]
 name = "bf-context"
-description = "Builderforce local context service: workspace registry, loopback HTTP API and MCP server over bf-index"
+description = "Builderforce local context service: workspace registry and loopback HTTP API over bf-index"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -17,7 +17,7 @@ path = "src/main.rs"
 [features]
 default = ["embeddings"]
 embeddings = ["bf-index/embeddings"]
-# LLMLingua-2 compression (`POST /v1/compress`, MCP `compress_context`, `bf-context compress`).
+# LLMLingua-2 compression (`POST /v1/compress`, `bf-context compress`).
 # Off by default: it adds the ~179 MB model on first use.
 compress = ["dep:bf-compress", "bf-compress/compress"]
 

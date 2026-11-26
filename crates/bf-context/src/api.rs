@@ -1,6 +1,4 @@
-//! The service's operations, transport-free. The loopback HTTP server and the MCP server
-//! are both thin adapters over `dispatch`, so a new operation is added once and every
-//! client (VS Code, Claude Code, Cursor, the desktop UI) gets it.
+//! The service operations shared by the loopback HTTP server and desktop UI.
 
 use crate::activity::{now_ms, Entry};
 use crate::registry::Registry;
@@ -67,7 +65,7 @@ struct RefsReq {
     texts: Vec<String>,
 }
 
-/// Operation names — the HTTP path segment (`POST /v1/<op>`) and the MCP tool mapping.
+/// Operation names — the HTTP path segment (`POST /v1/<op>`).
 pub mod ops {
     pub const HEALTH: &str = "health";
     pub const WORKSPACES: &str = "workspaces";

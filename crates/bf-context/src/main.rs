@@ -1,7 +1,6 @@
 //! `bf-context` — the headless context service.
 //!
 //!   bf-context serve                  run the service (what the desktop app does, minus the UI)
-//!   bf-context mcp [--root <dir>]     MCP stdio server for Claude Code / Cursor (default root: cwd)
 //!   bf-context index <dir>            index a workspace once and print its status
 //!   bf-context search <dir> <query>   search a workspace and print the hits as JSON
 //!   bf-context repo-map --root <dir> [--max-tokens N] [--focus <path>…] [--query <task>…]
@@ -11,7 +10,7 @@
 //!                                     LLMLingua-2 compress stdin to stdout (`compress` feature)
 
 use anyhow::{anyhow, Result};
-use bf_context::{api, api::ops, client::Client, mcp, paths, server, Registry};
+use bf_context::{api, api::ops, client::Client, paths, server, Registry};
 use bf_index::Index;
 use serde_json::json;
 use std::io::Read;
@@ -21,7 +20,6 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("serve") => serve(),
-        Some("mcp") => mcp::run_stdio(root_arg(&args[1..])?),
         Some("index") => {
             let root = PathBuf::from(args.get(1).ok_or_else(|| anyhow!("usage: bf-context index <dir>"))?);
             index_once(root)
@@ -37,7 +35,7 @@ fn main() -> Result<()> {
         Some("compress") => compress(&args[1..]),
         _ => {
             eprintln!(
-                "usage: bf-context <serve | mcp [--root <dir>] | index <dir> | search <dir> <query> | repo-map --root <dir> [--max-tokens N] [--focus <path>…] | compress [--rate R] < file>"
+                "usage: bf-context <serve | index <dir> | search <dir> <query> | repo-map --root <dir> [--max-tokens N] [--focus <path>…] | compress [--rate R] < file>"
             );
             std::process::exit(2);
         }
@@ -102,13 +100,6 @@ fn compress(rest: &[String]) -> Result<()> {
         out.get("originalTokens").and_then(|v| v.as_u64()).unwrap_or(0)
     );
     Ok(())
-}
-
-fn root_arg(rest: &[String]) -> Result<PathBuf> {
-    match rest.iter().position(|a| a == "--root") {
-        Some(i) => rest.get(i + 1).map(PathBuf::from).ok_or_else(|| anyhow!("--root needs a directory")),
-        None => Ok(std::env::current_dir()?),
-    }
 }
 
 fn serve() -> Result<()> {

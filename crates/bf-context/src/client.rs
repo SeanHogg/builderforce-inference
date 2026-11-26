@@ -1,6 +1,6 @@
 //! One way to reach the operations: the running desktop service over loopback when there
 //! is one (its index is already warm and shared), otherwise an in-process registry. The
-//! MCP bridge and the CLI both go through this, so neither knows which it got.
+//! The CLI can use either path.
 
 use crate::api;
 use crate::discovery::{self, Discovery};

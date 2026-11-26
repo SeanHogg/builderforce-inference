@@ -4,18 +4,20 @@
 //! runs and the private model all live in `builderforce-memory` — the engine owns the
 //! domain, `builderforce-memory-mcp` persists it (`memory.json`, `experience.json`,
 //! `episodes/`) and serves it. This crate finds that server (see [`launch`]) and talks to
-//! it through `bf-mcp`'s stdio client, with the environment Synapse needs.
+//! to the private Evermind process over stdio.
 
+mod client;
 pub mod launch;
+mod spec;
 
 use anyhow::Result;
-use bf_mcp::McpClient;
+use client::McpClient;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::time::Duration;
 
-pub use bf_mcp::LaunchSpec;
-pub use bf_mcp::CALL_TIMEOUT;
+pub use client::CALL_TIMEOUT;
+pub use spec::LaunchSpec;
 
 /// Turns the experience tools on in the server (off for plain coding-agent installs).
 const EXPERIENCE_ENV: (&str, &str) = ("BUILDERFORCE_MEMORY_EXPERIENCE", "1");

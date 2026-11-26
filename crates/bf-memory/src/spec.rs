@@ -1,6 +1,4 @@
-//! How a stdio MCP server is started: a command and its arguments. Most published servers
-//! are npm packages run through `npx`, which on Windows is a `.cmd` shim that has to go
-//! through `cmd` — written once here for every server Synapse starts.
+//! Launch the local Evermind process, including the Windows npx shim.
 
 use std::path::Path;
 
@@ -20,17 +18,13 @@ impl LaunchSpec {
     pub fn npx(args: Vec<String>, windows: bool) -> Self {
         let mut full = vec!["-y".to_string()];
         full.extend(args);
-        Self::shim("npx", full, windows)
-    }
-
-    /// A command that may be a `.cmd` shim on Windows (`npx`, `uvx`, …).
-    pub fn shim(command: &str, args: Vec<String>, windows: bool) -> Self {
+        let command = "npx";
         if windows {
             let mut with_shell = vec!["/c".to_string(), command.to_string()];
-            with_shell.extend(args);
+            with_shell.extend(full);
             Self { command: "cmd".into(), args: with_shell }
         } else {
-            Self { command: command.into(), args }
+            Self { command: command.into(), args: full }
         }
     }
 }
