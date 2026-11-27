@@ -100,20 +100,20 @@ pub fn name_of(pid: u32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Command, Stdio};
 
     #[test]
-    fn scope_contains_the_launched_process_and_its_children() {
-        // A shell outlives the test in every environment, so its pid and its own pid are
-        // always a live process tree to scope.
-        let mut child = std::process::Command::new("sh")
-            .arg("-c")
-            // Use /dev/null, not the Windows NUL device: the command runs under `sh -c`
-            // (git-bash/MSYS), where `>NUL` is a real file named "NUL" but `/dev/null` is
-            // the null device (MSYS maps it to NUL on Windows). `>NUL` here is what left
-            // a stray NUL file in the working tree.
-            .arg(if cfg!(windows) { "cmd /c ping -n 30 127.0.0.1 >/dev/null" } else { "sleep 30" })
-            .spawn()
-            .expect("spawn a process to scope");
+    fn scope_contains_the_launched_process() {
+        let mut command = if cfg!(windows) {
+            let mut ping = Command::new("ping.exe");
+            ping.args(["-n", "30", "127.0.0.1"]);
+            ping
+        } else {
+            let mut sleep = Command::new("sleep");
+            sleep.arg("30");
+            sleep
+        };
+        let mut child = command.stdout(Stdio::null()).spawn().expect("spawn a process to scope");
         let pid = child.id();
         let mut scope = Scope::new(pid, "nonexistent-binary-name-bf-teach-test");
         assert!(scope.contains(pid), "the launched root pid is in scope");

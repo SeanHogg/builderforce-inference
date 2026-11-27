@@ -3,7 +3,7 @@
 # empty string an unset secret becomes, and then fails the whole build. So no workflow
 # passes these to tauri-action directly: this step proves the .p12 imports and exports
 # them through $GITHUB_ENV, or leaves them unset so the build ships unsigned.
-# Used by release.yml here (Synapse) and by builderforce-spawn's release.yml, which
+# Used by Synapse, the headless Teach helper release, and builderforce-spawn's release.yml, which
 # references it as SeanHogg/builderforce-inference/.github/actions/macos-signing@main.
 name: macOS signing
 description: Export the Apple signing variables only when the certificate imports.
@@ -14,6 +14,7 @@ inputs:
   apple-id: { description: 'APPLE_ID (notarization)', required: false, default: '' }
   apple-password: { description: 'APPLE_PASSWORD (app-specific password)', required: false, default: '' }
   team-id: { description: 'APPLE_TEAM_ID', required: false, default: '' }
+  import-for-codesign: { description: 'Import the certificate into the runner keychain for direct codesign calls', required: false, default: 'false' }
 runs:
   using: composite
   steps:
@@ -45,3 +46,16 @@ runs:
         else
           echo "::notice::No usable macOS signing certificate; building unsigned."
         fi
+    - if: inputs.import-for-codesign == 'true' && env.APPLE_CERTIFICATE != '' && env.APPLE_SIGNING_IDENTITY != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        keychain="$RUNNER_TEMP/build.keychain-db"
+        p12="$RUNNER_TEMP/cert.p12"
+        trap 'rm -f "$p12"' EXIT
+        security create-keychain -p ci "$keychain"
+        security default-keychain -s "$keychain"
+        security unlock-keychain -p ci "$keychain"
+        echo "$APPLE_CERTIFICATE" | base64 --decode > "$p12"
+        security import "$p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci "$keychain"

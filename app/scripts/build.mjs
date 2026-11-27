@@ -16,7 +16,7 @@ import { makeDmg } from './make-dmg.mjs';
 const STAGES = ['fetch', 'package', 'installer', 'all'];
 
 const APP = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const BUILD = join(APP, '.build');
+const BUILD = resolve(process.env.SYNAPSE_BUILD_DIR || join(APP, '.build'));
 const SRC = join(BUILD, 'vscode');
 const OUT = join(BUILD, 'out');
 const UPSTREAM_REPO = 'https://github.com/microsoft/vscode';
@@ -51,11 +51,16 @@ function parseArgs(argv) {
 function fetchUpstream(tag) {
   if (existsSync(join(SRC, '.git'))) {
     const head = spawnSync('git', ['describe', '--tags', '--exact-match'], { cwd: SRC, encoding: 'utf8' }).stdout?.trim();
-    if (head === tag) { console.log(`reusing checkout at ${tag}`); run('git', ['checkout', '--', '.']); return; }
+    if (head === tag) {
+      console.log(`reusing checkout at ${tag}`);
+      run('git', ['config', 'core.autocrlf', 'false']);
+      run('git', ['checkout', '--', '.']);
+      return;
+    }
     rmSync(SRC, { recursive: true, force: true });
   }
   mkdirSync(BUILD, { recursive: true });
-  run('git', ['clone', '--depth', '1', '--branch', tag, UPSTREAM_REPO, SRC], BUILD);
+  run('git', ['clone', '--config', 'core.autocrlf=false', '--depth', '1', '--branch', tag, UPSTREAM_REPO, SRC], BUILD);
 }
 
 /** Step 2: Synapse's product.json merged over upstream's. */
@@ -100,17 +105,22 @@ function unzip(file, dest) {
  * Step 5 (after the `-min` task): a VSIX keeps its files under `extension/`; they become a built-in
  * extension INSIDE the packaged app. Never into the source `extensions/` folder gulp compiles.
  */
-function installVsix(vsix, { platform, arch }) {
+function installVsix(vsix, extensionId, { platform, arch }) {
   const tmp = mkdtempSync(join(tmpdir(), 'synapse-vsix-'));
-  unzip(resolve(vsix), tmp);
-  const manifest = readJson(join(tmp, 'extension', 'package.json'));
-  const extensionsDir = join(BUILD, ...builtinExtensionsPath(platform, arch));
-  if (!existsSync(extensionsDir)) fail(`packaged app has no built-in extensions folder: ${extensionsDir}`);
-  const dest = join(extensionsDir, `${manifest.publisher}.${manifest.name}`);
-  rmSync(dest, { recursive: true, force: true });
-  cpSync(join(tmp, 'extension'), dest, { recursive: true });
-  rmSync(tmp, { recursive: true, force: true });
-  console.log(`installed ${manifest.publisher}.${manifest.name}@${manifest.version} into ${dest}`);
+  try {
+    unzip(resolve(vsix), tmp);
+    const manifest = readJson(join(tmp, 'extension', 'package.json'));
+    const actualId = `${manifest.publisher}.${manifest.name}`;
+    if (actualId !== extensionId) throw new Error(`Expected ${extensionId}, received ${actualId}`);
+    const extensionsDir = join(BUILD, ...builtinExtensionsPath(platform, arch));
+    if (!existsSync(extensionsDir)) throw new Error(`Packaged app has no built-in extensions folder: ${extensionsDir}`);
+    const dest = join(extensionsDir, extensionId);
+    rmSync(dest, { recursive: true, force: true });
+    cpSync(join(tmp, 'extension'), dest, { recursive: true });
+    console.log(`installed ${extensionId}@${manifest.version} into ${dest}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 const GULP_ENV = { NODE_OPTIONS: '--max-old-space-size=8192' };
@@ -169,8 +179,8 @@ function main() {
     applyPatches();
     copyIcons(ctx.platform);
     buildApp(ctx);
-    installVsix(opts['builderforce-vsix'], ctx);
-    installVsix(opts['spawn-vsix'], ctx);
+    installVsix(opts['builderforce-vsix'], 'builderforce.builderforce-ai', ctx);
+    installVsix(opts['spawn-vsix'], 'builderforce.spawn', ctx);
   }
   if (stage === 'installer' || stage === 'all') {
     buildInstaller(ctx);

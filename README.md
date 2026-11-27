@@ -2,14 +2,14 @@
 
 > Part of [Builderforce open source](https://builderforce.ai/open-source): the MIT projects Builderforce.ai is built on.
 
-The Builderforce native inference engine (`bfi`) and local code-context service (`bf-context`). Run LLMs on your own machine with no Ollama required, and give Synapse and the Builderforce VS Code extension fast local code search, repo maps and prompt compression. Status: see [docs/PRD-native-engine.md](docs/PRD-native-engine.md). GPU 70% vs llama-bench and live Bonsai 27B identity are not claimed. Keep `crates/bfi` `import-ollama` if you are converting an existing Ollama library.
+The Builderforce native inference engine (`bfi`) and local code-context service (`bf-context`). Run local models and give the Builderforce extension fast code search, repo maps, and prompt compression. The engine status and Ollama import details are in the [native engine specification](docs/PRD-native-engine.md).
 
 ## Synapse desktop app
 
-Synapse, the Builderforce desktop app, is built from [`app/`](app/). See [app/README.md](app/README.md) for how to build it and cut a release. This repo also ships the `bfi` engine and the `bf-context` service that Synapse uses.
+The Synapse replacement uses a Code-OSS build recipe in [`app/`](app/). It packages the Builderforce and Spawn VS Code extensions. The [build and release instructions](app/README.md) cover the desktop package.
 
-- Local models run with `bfi serve`, which announces itself in `~/.builderforce/bfi.json` (Synapse and the Builderforce VS Code extension discover it), or in-process via `@seanhogg/bfi-node`.
-- The code-context service is `bf-context serve`; it writes `~/.builderforce/desktop.json`, which Synapse and the extension read (the file name is a wire contract and is unchanged).
+- Local models run with `bfi serve`, which the Builderforce extension discovers through `~/.builderforce/bfi.json`. The extension can also run models in-process through `@seanhogg/bfi-node`.
+- The extension discovers the loopback code-context service through `~/.builderforce/desktop.json`, written by `bf-context serve`.
 
 ## Install
 
@@ -58,7 +58,7 @@ cargo build -p bf-context --features compress
 
 ### `bf-context` commands
 
-Use **BuilderForce Workspace** (the Builderforce extension, in Synapse or VS Code) for MCP. Update any configuration that still launches `synapse mcp` or `bf-context mcp`. The extension can use the loopback context service for hybrid search and compression when available.
+Use **BuilderForce Workspace** in the Builderforce extension for MCP. Migrate legacy `synapse mcp` and `bf-context mcp` registrations to that server. The extension can use the loopback context service for hybrid search and compression when available.
 
 ```sh
 bf-context serve                         # run the loopback service the Builderforce extension discovers

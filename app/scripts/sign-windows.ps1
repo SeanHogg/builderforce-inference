@@ -19,10 +19,8 @@ if (-not $files) { throw "nothing to sign under $Path" }
 
 $signtool = $null
 if (-not $win.signCommand) {
-  # The .pfx path needs signtool.exe from the Windows SDK, which is not on PATH on the runner.
-  $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' -ErrorAction SilentlyContinue |
-    Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
-  if (-not $signtool) { throw 'signtool.exe not found under C:\Program Files (x86)\Windows Kits\10\bin' }
+  . (Join-Path $PSScriptRoot 'windows-sdk.ps1')
+  $signtool = Get-WindowsSignTool
 }
 
 foreach ($f in $files) {

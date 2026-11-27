@@ -11,7 +11,7 @@ extensions, and runs upstream's own packaging. Design: `Builderforce.ai/docs/spe
 |---|---|
 | `upstream.json` | The pinned upstream tag (`vscodeTag`). Confirm the tag exists and still matches the extension's `chatSessionsProvider` proposal before the first CI build. |
 | `product.json` | Merged over upstream's `product.json`: names, ids, `synapse:` URL scheme, Open VSX gallery (`serviceUrl`, `itemUrl`, `resourceUrlTemplate`; `controlUrl`/`latestUrlTemplate` are deliberately omitted, as their Open VSX values are unconfirmed), enabled API proposals. Upstream's `builtInExtensions` (the JS debugger) are kept. No Microsoft telemetry keys. The `{{GUID}` win32 ids are Inno Setup escaped braces: keep that form. |
-| `patches/` | Minimal `*.patch` files applied with `git apply`, in order. Empty today. See `patches/README.md`. |
+| `patches/` | Minimal `*.patch` files applied with `git apply`, in order. See `patches/README.md`. |
 | `icons/` | Synapse icons (`icon.ico`, `icon.icns`, `icon.png`, sized PNGs), copied over upstream's `resources/*/code.*`. |
 | `scripts/lib.mjs` | Pure helpers: `mergeProduct`, `installerName`, `gulpTask`. |
 | `scripts/lib.test.mjs` | `node:test` tests for the helpers (`node --test app/scripts`). |
@@ -25,8 +25,9 @@ site's download resolver, `Builderforce.ai/api/src/application/desktop/synapseIn
 ## Build locally
 
 Prerequisites: git, the Node version in upstream's `.nvmrc`, and upstream's native toolchain for your OS
-(Windows: VS Build Tools + Python; Linux: `libx11-dev libxkbfile-dev libsecret-1-dev libkrb5-dev fakeroot dpkg`; macOS: Xcode CLI tools).
+(Windows: VS 2022 Build Tools, Python and the Windows SDK with `signtool.exe` on PATH; Linux: `libx11-dev libxkbfile-dev libsecret-1-dev libkrb5-dev fakeroot dpkg`; macOS: Xcode CLI tools).
 You also need the two extension packages as `.vsix` files (the Builderforce extension and the Spawn extension).
+Set `SYNAPSE_BUILD_DIR` to use a different scratch directory. Windows CI uses a short path for Inno Setup.
 
 ```
 node app/scripts/build.mjs --platform win32 --arch x64 --version 2026.11.27 \
@@ -56,9 +57,14 @@ origin unchanged (the gateway's CORS allows it).
 
 ## Cut a release
 
-1. Make sure the Builderforce and Spawn `.vsix` release assets exist.
+For CI verification, dispatch **Synapse desktop** with `verify_only` and the Builderforce VSIX URL
+or a draft release in this repository carrying an asset named `builderforce.vsix`. Supply the Spawn
+VSIX URL or let CI package the pinned Spawn source. This run uploads installers to Actions artifacts.
+
+1. Make sure the Builderforce `.vsix` release asset exists.
 2. Either push a tag `synapse-v<version>` (for example `synapse-v2026.11.27`), or run the **Synapse desktop** workflow by hand with
-   `version` and the two VSIX URLs. Tag-triggered runs read the URLs from the repository variables `BUILDERFORCE_VSIX_URL` and `SPAWN_VSIX_URL`.
+   `version` and the Builderforce VSIX URL. Tag-triggered runs read `BUILDERFORCE_VSIX_URL`. Set `spawn_vsix_url` or `SPAWN_VSIX_URL`
+   to bundle a different Spawn build. Otherwise CI packages the pinned Spawn source.
 3. The workflow builds all four targets, signs them with the composite actions in `.github/actions/`, and attaches the installers to
    the release `v<version>`, which it creates as a DRAFT (at the workflow's commit). The `publish` job checks that every expected
    installer is attached (`expectedInstallers` in `lib.mjs`) and only then runs `gh release edit v<version> --draft=false --latest`; if any
