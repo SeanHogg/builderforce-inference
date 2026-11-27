@@ -13,6 +13,10 @@ made against the upstream checkout pinned in `../upstream.json`.
 of a default Copilot agent. Synapse ships its own agent extension. Upstream builds that configure
 Copilot still get its ripgrep shim.
 
+`002-linux-generated-dependencies.patch` calculates package dependencies from the files
+Synapse ships. The desktop build omits the separately packaged tunnel CLI and uses the
+generated dependency list in its Debian package.
+
 ## First CI-time task
 
 Upstream hard-codes "Visual Studio Code" in the Welcome / walkthrough strings (and a few other UI strings).

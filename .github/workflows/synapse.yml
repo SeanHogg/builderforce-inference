@@ -218,6 +218,8 @@ jobs:
       # Stage 2: the installer (.dmg / Inno setup / .deb).
       - name: Build the installer
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: >
           node app/scripts/build.mjs --stage installer
           --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
