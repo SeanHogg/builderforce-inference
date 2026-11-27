@@ -1,0 +1,44 @@
+{
+  "nameShort": "Synapse",
+  "nameLong": "Synapse",
+  "applicationName": "synapse",
+  "dataFolderName": ".synapse",
+  "urlProtocol": "synapse",
+  "darwinBundleIdentifier": "ai.builderforce.synapse",
+  "win32AppId": "{{e8b9dfbc-5330-4f4a-bf27-c4bf2db9ebb8}",
+  "win32x64AppId": "{{24cecc88-cc9b-4560-8cad-ffdf9aaf96a3}",
+  "win32arm64AppId": "{{c89d6601-a5e6-4a43-aeac-424f548d2627}",
+  "win32UserAppId": "{{0855c3a3-efb1-4cec-9ade-5003d2a7e9e2}",
+  "win32x64UserAppId": "{{7fa23176-1e8e-4071-910f-49d61359258e}",
+  "win32arm64UserAppId": "{{9e70a2a0-86f3-4ffe-9999-ffdbeceab59e}",
+  "win32MutexName": "synapse",
+  "win32DirName": "Synapse",
+  "win32NameVersion": "Synapse",
+  "win32RegValueName": "Synapse",
+  "win32ShellNameShort": "Synapse",
+  "win32AppUserModelId": "ai.builderforce.Synapse",
+  "win32TunnelServiceMutex": "synapse-tunnelservice",
+  "win32TunnelMutex": "synapse-tunnel",
+  "win32ContextMenu": {
+    "x64": { "clsid": "{F23A2A08-2247-493E-B592-C6CE04C04515}" },
+    "arm64": { "clsid": "{5BA7CED2-E191-4B54-AF19-7738D3753123}" }
+  },
+  "linuxIconName": "synapse",
+  "serverApplicationName": "synapse-server",
+  "serverDataFolderName": ".synapse-server",
+  "tunnelApplicationName": "synapse-tunnel",
+  "darwinProfileUUID": "77588EE2-9AAE-4FDF-98BD-21353A83DAA5",
+  "darwinProfilePayloadUUID": "90854AAC-5736-4CAC-B4F5-520098631880",
+  "defaultChatAgent": null,
+  "trustedExtensionAuthAccess": { "builderforce": ["builderforce.spawn"] },
+  "licenseUrl": "https://github.com/SeanHogg/builderforce-inference/blob/main/LICENSE",
+  "reportIssueUrl": "https://github.com/SeanHogg/builderforce-inference/issues/new",
+  "extensionsGallery": {
+    "serviceUrl": "https://open-vsx.org/vscode/gallery",
+    "itemUrl": "https://open-vsx.org/vscode/item",
+    "resourceUrlTemplate": "https://open-vsx.org/vscode/unpkg/{publisher}/{name}/{version}/{path}"
+  },
+  "extensionEnabledApiProposals": {
+    "builderforce.builderforce-ai": ["chatSessionsProvider"]
+  }
+}

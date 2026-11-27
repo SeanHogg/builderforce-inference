@@ -6,7 +6,7 @@ The Builderforce native inference engine (`bfi`) and local code-context service 
 
 ## Synapse desktop app
 
-Synapse desktop app: the app's source is no longer in this repo (2026-11-27). This repo ships the `bfi` engine and the `bf-context` service that Synapse uses.
+Synapse, the Builderforce desktop app, is built from [`app/`](app/). See [app/README.md](app/README.md) for how to build it and cut a release. This repo also ships the `bfi` engine and the `bf-context` service that Synapse uses.
 
 - Local models run with `bfi serve`, which announces itself in `~/.builderforce/bfi.json` (Synapse and the Builderforce VS Code extension discover it), or in-process via `@seanhogg/bfi-node`.
 - The code-context service is `bf-context serve`; it writes `~/.builderforce/desktop.json`, which Synapse and the extension read (the file name is a wire contract and is unchanged).

@@ -1,0 +1,4 @@
+{
+  "vscodeTag": "1.140.0",
+  "README": "This tag must be confirmed (it exists upstream and the extension's chatSessionsProvider proposal still matches) before the first CI build."
+}

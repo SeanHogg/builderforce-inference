@@ -1,0 +1,252 @@
+# Builds the Synapse desktop installers from app/ (see app/README.md) and attaches them to
+# the v<version> release. The release is created as a DRAFT and is only published (and marked
+# latest) when every expected installer is attached, so releases/latest never points at a
+# partial release (release.yml publishes the headless bfi / bf-context binaries with
+# --latest=false).
+#
+# Run it by hand (workflow_dispatch) or push a tag: synapse-v2026.11.27.
+#
+# The two extension packages are fetched from URLs. The release URLs are not fixed by this repo,
+# so they are workflow inputs, with the repository variables BUILDERFORCE_VSIX_URL and
+# SPAWN_VSIX_URL as the fallback for tag-triggered runs.
+name: Synapse desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, e.g. 2026.11.27 (the release is v<version>)'
+        required: true
+      builderforce_vsix_url:
+        description: 'URL of the builderforce-ai .vsix (default: repository variable BUILDERFORCE_VSIX_URL)'
+        required: false
+      spawn_vsix_url:
+        description: 'URL of the Spawn .vsix (default: repository variable SPAWN_VSIX_URL)'
+        required: false
+  push:
+    tags: ['synapse-v*']
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ inputs.version || '' }}
+
+jobs:
+  version:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${VERSION:-${GITHUB_REF_NAME#synapse-v}}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version '$version' is not MAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+      # The build jobs upload into this release, so it must exist first. It is a draft until the
+      # publish job has checked that every installer is attached.
+      - name: Create the draft release if missing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.v.outputs.tag }}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --draft --latest=false --target "${{ github.sha }}" \
+              --title "Synapse ${{ steps.v.outputs.version }}" \
+              --notes "Synapse desktop installers for Windows, macOS and Linux."
+          fi
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, platform: win32, arch: x64 }
+          - { os: macos-latest, platform: darwin, arch: arm64 }
+          # Native Intel runner. If this label is ever unavailable, cross-build x64 on
+          # macos-latest instead (os: macos-latest, plus npm_config_arch=x64 in the job env).
+          - { os: macos-15-intel, platform: darwin, arch: x64 }
+          - { os: ubuntu-22.04, platform: linux, arch: x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # Clone upstream first (the runner's preinstalled Node runs this), so the next step can
+      # read upstream's own .nvmrc.
+      - name: Fetch upstream
+        shell: bash
+        run: >
+          node app/scripts/build.mjs --stage fetch
+          --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+          --version ${{ needs.version.outputs.version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.build/vscode/.nvmrc
+      - name: Linux build dependencies
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxkbfile-dev libsecret-1-dev libkrb5-dev fakeroot dpkg rpm
+      - name: Fetch the extension packages
+        shell: bash
+        env:
+          BF_URL: ${{ inputs.builderforce_vsix_url || vars.BUILDERFORCE_VSIX_URL }}
+          SPAWN_URL: ${{ inputs.spawn_vsix_url || vars.SPAWN_VSIX_URL }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$BF_URL" || -z "$SPAWN_URL" ]]; then
+            echo "::error::set the builderforce_vsix_url and spawn_vsix_url inputs (or the BUILDERFORCE_VSIX_URL / SPAWN_VSIX_URL repository variables)"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/vsix"
+          curl -fsSL "$BF_URL" -o "$RUNNER_TEMP/vsix/builderforce.vsix"
+          curl -fsSL "$SPAWN_URL" -o "$RUNNER_TEMP/vsix/spawn.vsix"
+
+      # Signing setup. The composite actions were written for Tauri: macOS exports the Apple
+      # variables only when the certificate imports; Windows writes a signCommand or certificate
+      # thumbprint into a config JSON, which app/scripts/sign-windows.ps1 applies.
+      - name: macOS signing variables
+        if: matrix.platform == 'darwin'
+        uses: ./.github/actions/macos-signing
+        with:
+          certificate: ${{ secrets.APPLE_CERTIFICATE }}
+          certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          signing-identity: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          apple-id: ${{ secrets.APPLE_ID }}
+          apple-password: ${{ secrets.APPLE_PASSWORD }}
+          team-id: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Import the macOS signing certificate
+        if: matrix.platform == 'darwin' && env.APPLE_CERTIFICATE != '' && env.APPLE_SIGNING_IDENTITY != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p ci "$keychain"
+          security default-keychain -s "$keychain"
+          security unlock-keychain -p ci "$keychain"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci "$keychain"
+          rm -f "$RUNNER_TEMP/cert.p12"
+      - name: Windows signing configuration
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          '{"productName":"Synapse","bundle":{}}' | Set-Content "$env:RUNNER_TEMP/sign.json"
+      - name: Windows signing setup
+        if: matrix.platform == 'win32'
+        uses: ./.github/actions/windows-signing
+        with:
+          config: ${{ runner.temp }}/sign.json
+          azure-endpoint: ${{ secrets.AZURE_CODESIGN_ENDPOINT }}
+          azure-account: ${{ secrets.AZURE_CODESIGN_ACCOUNT }}
+          azure-profile: ${{ secrets.AZURE_CODESIGN_PROFILE }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          certificate: ${{ secrets.WINDOWS_CERTIFICATE }}
+          certificate-password: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+
+      # Stage 1: the packaged app, with the built-in extensions inside it (on Windows this includes
+      # inno_updater.exe, so the signing step below covers it).
+      - name: Package Synapse
+        shell: bash
+        run: >
+          node app/scripts/build.mjs --stage package
+          --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+          --version ${{ needs.version.outputs.version }}
+          --builderforce-vsix "$RUNNER_TEMP/vsix/builderforce.vsix"
+          --spawn-vsix "$RUNNER_TEMP/vsix/spawn.vsix"
+
+      # Sign the packaged app BEFORE the installer is made from it.
+      - name: Sign the macOS app
+        if: matrix.platform == 'darwin' && env.APPLE_CERTIFICATE != '' && env.APPLE_SIGNING_IDENTITY != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="app/.build/VSCode-darwin-${{ matrix.arch }}/Synapse.app"
+          codesign --force --deep --options runtime --timestamp \
+            --entitlements app/build/darwin/entitlements.plist \
+            --sign "$APPLE_SIGNING_IDENTITY" "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+      - name: Sign the Windows binaries
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: ./app/scripts/sign-windows.ps1 -Config "$env:RUNNER_TEMP/sign.json" -Path app/.build/VSCode-win32-x64 -Recurse -Include '*.exe','*.dll'
+
+      # Stage 2: the installer (.dmg / Inno setup / .deb).
+      - name: Build the installer
+        shell: bash
+        run: >
+          node app/scripts/build.mjs --stage installer
+          --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+          --version ${{ needs.version.outputs.version }}
+
+      # Sign the installer itself. macOS: sign the dmg, notarize it, staple the ticket.
+      - name: Sign, notarize and staple the macOS image
+        if: matrix.platform == 'darwin' && env.APPLE_CERTIFICATE != '' && env.APPLE_SIGNING_IDENTITY != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dmg in app/.build/out/*.dmg; do
+            codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$dmg"
+            if [[ -n "${APPLE_ID:-}" ]]; then
+              xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+              xcrun stapler staple "$dmg"
+            else
+              echo "::notice::No APPLE_ID; the .dmg is signed but not notarized."
+            fi
+          done
+      - name: Sign the Windows installer
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: ./app/scripts/sign-windows.ps1 -Config "$env:RUNNER_TEMP/sign.json" -Path app/.build/out -Include '*.exe'
+
+      - name: Upload to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for f in app/.build/out/*; do
+            gh release upload "${{ needs.version.outputs.tag }}" "$f" --clobber
+          done
+
+  # Runs even when a build leg failed, so the failure is reported here with a clear message and
+  # the release stays a draft.
+  publish:
+    needs: [version, build]
+    if: ${{ always() && needs.version.result == 'success' }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Refuse a partial release
+        if: needs.build.result != 'success'
+        shell: bash
+        run: |
+          echo "::error::A build leg did not succeed (build: ${{ needs.build.result }}); ${{ needs.version.outputs.tag }} stays a draft and is not published."
+          exit 1
+      - uses: actions/checkout@v4
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="${{ needs.version.outputs.tag }}"
+          gh release view "$tag" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/assets.txt"
+          node app/scripts/check-assets.mjs "${{ needs.version.outputs.version }}" "$RUNNER_TEMP/assets.txt"
+          gh release edit "$tag" --draft=false --latest
