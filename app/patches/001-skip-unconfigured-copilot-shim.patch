@@ -1,0 +1,15 @@
+diff --git a/build/gulpfile.vscode.ts b/build/gulpfile.vscode.ts
+--- a/build/gulpfile.vscode.ts
++++ b/build/gulpfile.vscode.ts
+@@ -542,6 +542,11 @@
+ function prepareCopilotRipgrepShimTask(platform: string, arch: string, destinationFolderName: string) {
+ 	const outputDir = path.join(path.dirname(root), destinationFolderName);
+ 
+ 	return async () => {
++		// Synapse ships its own agent extension and leaves Copilot unconfigured.
++		if (!product.defaultChatAgent) {
++			return;
++		}
++
+ 		// On Windows with win32VersionedUpdate, app resources live under a
+ 		// commit-hash prefix: {output}/{commitHash}/resources/app/

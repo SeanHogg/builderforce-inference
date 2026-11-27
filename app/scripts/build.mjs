@@ -100,17 +100,22 @@ function unzip(file, dest) {
  * Step 5 (after the `-min` task): a VSIX keeps its files under `extension/`; they become a built-in
  * extension INSIDE the packaged app. Never into the source `extensions/` folder gulp compiles.
  */
-function installVsix(vsix, { platform, arch }) {
+function installVsix(vsix, extensionId, { platform, arch }) {
   const tmp = mkdtempSync(join(tmpdir(), 'synapse-vsix-'));
-  unzip(resolve(vsix), tmp);
-  const manifest = readJson(join(tmp, 'extension', 'package.json'));
-  const extensionsDir = join(BUILD, ...builtinExtensionsPath(platform, arch));
-  if (!existsSync(extensionsDir)) fail(`packaged app has no built-in extensions folder: ${extensionsDir}`);
-  const dest = join(extensionsDir, `${manifest.publisher}.${manifest.name}`);
-  rmSync(dest, { recursive: true, force: true });
-  cpSync(join(tmp, 'extension'), dest, { recursive: true });
-  rmSync(tmp, { recursive: true, force: true });
-  console.log(`installed ${manifest.publisher}.${manifest.name}@${manifest.version} into ${dest}`);
+  try {
+    unzip(resolve(vsix), tmp);
+    const manifest = readJson(join(tmp, 'extension', 'package.json'));
+    const actualId = `${manifest.publisher}.${manifest.name}`;
+    if (actualId !== extensionId) throw new Error(`Expected ${extensionId}, received ${actualId}`);
+    const extensionsDir = join(BUILD, ...builtinExtensionsPath(platform, arch));
+    if (!existsSync(extensionsDir)) throw new Error(`Packaged app has no built-in extensions folder: ${extensionsDir}`);
+    const dest = join(extensionsDir, extensionId);
+    rmSync(dest, { recursive: true, force: true });
+    cpSync(join(tmp, 'extension'), dest, { recursive: true });
+    console.log(`installed ${extensionId}@${manifest.version} into ${dest}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 const GULP_ENV = { NODE_OPTIONS: '--max-old-space-size=8192' };
@@ -169,8 +174,8 @@ function main() {
     applyPatches();
     copyIcons(ctx.platform);
     buildApp(ctx);
-    installVsix(opts['builderforce-vsix'], ctx);
-    installVsix(opts['spawn-vsix'], ctx);
+    installVsix(opts['builderforce-vsix'], 'builderforce.builderforce-ai', ctx);
+    installVsix(opts['spawn-vsix'], 'builderforce.spawn', ctx);
   }
   if (stage === 'installer' || stage === 'all') {
     buildInstaller(ctx);

@@ -73,7 +73,7 @@ jobs:
           if ! gh release view "$tag" >/dev/null 2>&1; then
             # --latest=false: releases/latest links on builderforce.ai must keep resolving to the last release that has Synapse installers.
             gh release create "$tag" --draft --target "$GITHUB_SHA" --latest=false --title "Builderforce inference ${{ steps.t.outputs.version }}" \
-              --notes "The \`bfi\` inference engine and the \`bf-context\` local code-context service. Download the binaries for your platform below."
+              --notes "The bfi inference engine, bf-context local code-context service, and Teach-once helpers for Windows and macOS."
           fi
 
   cli:

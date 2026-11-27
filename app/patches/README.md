@@ -5,10 +5,13 @@ made against the upstream checkout pinned in `../upstream.json`.
 
 - `scripts/build.mjs` applies them with `git apply`, in filename order. Number them
   (`0001-branding.patch`, `0002-update-url.patch`) to control the order.
-- Keep each patch minimal and single-purpose: branding strings and the update URL only.
-  Anything that can be expressed in `../product.json` goes there instead.
+- Keep each patch minimal and single-purpose. Put product configuration in
+  `../product.json`.
 - A patch that no longer applies after a tag bump fails the build; regenerate it.
-- An empty set (only `.gitkeep`) is valid. There are no patches yet.
+
+`001-skip-unconfigured-copilot-shim.patch` makes upstream's installer task respect the absence
+of a default Copilot agent. Synapse ships its own agent extension. Upstream builds that configure
+Copilot still get its ripgrep shim.
 
 ## First CI-time task
 

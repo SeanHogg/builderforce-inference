@@ -11,7 +11,7 @@ extensions, and runs upstream's own packaging. Design: `Builderforce.ai/docs/spe
 |---|---|
 | `upstream.json` | The pinned upstream tag (`vscodeTag`). Confirm the tag exists and still matches the extension's `chatSessionsProvider` proposal before the first CI build. |
 | `product.json` | Merged over upstream's `product.json`: names, ids, `synapse:` URL scheme, Open VSX gallery (`serviceUrl`, `itemUrl`, `resourceUrlTemplate`; `controlUrl`/`latestUrlTemplate` are deliberately omitted, as their Open VSX values are unconfirmed), enabled API proposals. Upstream's `builtInExtensions` (the JS debugger) are kept. No Microsoft telemetry keys. The `{{GUID}` win32 ids are Inno Setup escaped braces: keep that form. |
-| `patches/` | Minimal `*.patch` files applied with `git apply`, in order. Empty today. See `patches/README.md`. |
+| `patches/` | Minimal `*.patch` files applied with `git apply`, in order. See `patches/README.md`. |
 | `icons/` | Synapse icons (`icon.ico`, `icon.icns`, `icon.png`, sized PNGs), copied over upstream's `resources/*/code.*`. |
 | `scripts/lib.mjs` | Pure helpers: `mergeProduct`, `installerName`, `gulpTask`. |
 | `scripts/lib.test.mjs` | `node:test` tests for the helpers (`node --test app/scripts`). |
