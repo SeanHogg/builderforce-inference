@@ -142,31 +142,31 @@ fn unknown_method_is_an_error_answer() {
 #[test]
 fn unsupported_platform_refuses_to_run() {
     let (s, log) = session(false, 0);
-    let a = call(&s, &log, 1, "run.start", json!({ "skill": skill_json(false), "values": {} }));
+    let a = call(&s, &log, 1, "run.start", json!({ "runId": "r1", "skill": skill_json(false), "values": {} }));
     assert_eq!(a["error"]["code"], "unsupported");
 }
 
 #[test]
 fn a_missing_secret_fails_run_start_before_anything_runs() {
     let (s, log) = session(true, 0);
-    let a = call(&s, &log, 1, "run.start", json!({ "skill": skill_json(true), "values": {} }));
+    let a = call(&s, &log, 1, "run.start", json!({ "runId": "r1", "skill": skill_json(true), "values": {} }));
     assert_eq!(a["error"]["code"], "missing_value");
     assert!(log.lock().unwrap().iter().all(|v| v.get("event").is_none()), "no run events");
 
-    let ok = call(&s, &log, 2, "run.start", json!({ "skill": skill_json(true), "values": { "pw": "x" } }));
+    let ok = call(&s, &log, 2, "run.start", json!({ "runId": "r1", "skill": skill_json(true), "values": { "pw": "x" } }));
     assert_eq!(ok["result"], json!({}));
 }
 
 #[test]
 fn a_second_run_is_busy_and_the_answer_reaches_the_gate() {
     let (s, log) = session(true, 0);
-    let start = json!({ "skill": skill_json(false), "values": {} });
+    let start = json!({ "runId": "r1", "skill": skill_json(false), "values": {} });
     assert_eq!(call(&s, &log, 1, "run.start", start.clone())["result"], json!({}));
     wait_for(&log, |v| v["event"] == "run.approvalNeeded" && v["idx"] == 0);
 
     assert_eq!(call(&s, &log, 2, "run.start", start.clone())["error"]["code"], "busy");
 
-    assert_eq!(call(&s, &log, 3, "approve.answer", json!({ "idx": 0, "approved": true }))["result"], json!({}));
+    assert_eq!(call(&s, &log, 3, "approve.answer", json!({ "runId": "r1", "idx": 0, "approved": true }))["result"], json!({}));
     let done = wait_for(&log, |v| v["event"] == "run.finished");
     assert_eq!(done["status"], "succeeded");
 
@@ -177,7 +177,7 @@ fn a_second_run_is_busy_and_the_answer_reaches_the_gate() {
 #[test]
 fn run_stop_declines_a_pending_approval() {
     let (s, log) = session(true, 0);
-    call(&s, &log, 1, "run.start", json!({ "skill": skill_json(false), "values": {} }));
+    call(&s, &log, 1, "run.start", json!({ "runId": "r1", "skill": skill_json(false), "values": {} }));
     wait_for(&log, |v| v["event"] == "run.approvalNeeded");
     call(&s, &log, 2, "run.stop", Value::Null);
     assert_eq!(wait_for(&log, |v| v["event"] == "run.finished")["status"], "denied");
@@ -186,7 +186,7 @@ fn run_stop_declines_a_pending_approval() {
 #[test]
 fn answering_with_no_run_is_an_error() {
     let (s, log) = session(true, 0);
-    let a = call(&s, &log, 1, "approve.answer", json!({ "idx": 0, "approved": true }));
+    let a = call(&s, &log, 1, "approve.answer", json!({ "runId": "r1", "idx": 0, "approved": true }));
     assert_eq!(a["error"]["code"], "idle");
 }
 
@@ -197,7 +197,7 @@ fn approval_blocks_until_the_matching_idx_is_answered() {
     let sink = events.clone();
     let emit: Emitter = Arc::new(move |v| sink.lock().unwrap().push(v));
     let pending: Pending = Arc::default();
-    let mut hooks = ChannelHooks::new(emit, Arc::new(AtomicBool::new(false)), rx, pending.clone());
+    let mut hooks = ChannelHooks::new(emit, "r1".into(), Arc::new(AtomicBool::new(false)), rx, pending.clone());
     // Answers sent once the gate is open: one for another step is skipped, the one for
     // idx 3 decides.
     let answerer = std::thread::spawn(move || {
@@ -209,7 +209,7 @@ fn approval_blocks_until_the_matching_idx_is_answered() {
     });
     assert!(!hooks.approve(3));
     answerer.join().unwrap();
-    assert_eq!(events.lock().unwrap()[0], json!({ "event": "run.approvalNeeded", "idx": 3 }));
+    assert_eq!(events.lock().unwrap()[0], json!({ "event": "run.approvalNeeded", "runId": "r1", "idx": 3 }));
 }
 
 /// Regression: an answer sent before the gate opened used to be queued and then
@@ -217,8 +217,8 @@ fn approval_blocks_until_the_matching_idx_is_answered() {
 #[test]
 fn an_answer_sent_before_the_gate_opens_is_refused_and_does_not_approve_it() {
     let (s, log, release) = held_session(true, 0);
-    call(&s, &log, 1, "run.start", json!({ "skill": skill_json(false), "values": {} }));
-    let early = call(&s, &log, 2, "approve.answer", json!({ "idx": 0, "approved": true }));
+    call(&s, &log, 1, "run.start", json!({ "runId": "r1", "skill": skill_json(false), "values": {} }));
+    let early = call(&s, &log, 2, "approve.answer", json!({ "runId": "r1", "idx": 0, "approved": true }));
     assert_eq!(early["error"]["code"], "not_waiting");
 
     release.send(()).unwrap();
@@ -226,14 +226,26 @@ fn an_answer_sent_before_the_gate_opens_is_refused_and_does_not_approve_it() {
     std::thread::sleep(Duration::from_millis(400));
     assert!(log.lock().unwrap().iter().all(|v| v["event"] != "run.finished"), "the gate must still be waiting");
 
-    assert_eq!(call(&s, &log, 3, "approve.answer", json!({ "idx": 0, "approved": false }))["result"], json!({}));
+    assert_eq!(call(&s, &log, 3, "approve.answer", json!({ "runId": "r1", "idx": 0, "approved": false }))["result"], json!({}));
     assert_eq!(wait_for(&log, |v| v["event"] == "run.finished")["status"], "denied");
+}
+
+#[test]
+fn an_answer_for_another_run_is_not_waiting() {
+    let (s, log) = session(true, 0);
+    call(&s, &log, 1, "run.start", json!({ "runId": "r1", "skill": skill_json(false), "values": {} }));
+    let ev = wait_for(&log, |v| v["event"] == "run.approvalNeeded");
+    assert_eq!(ev["runId"], "r1");
+    let stale = call(&s, &log, 2, "approve.answer", json!({ "runId": "old", "idx": 0, "approved": true }));
+    assert_eq!(stale["error"]["code"], "not_waiting");
+    call(&s, &log, 3, "approve.answer", json!({ "runId": "r1", "idx": 0, "approved": true }));
+    assert_eq!(wait_for(&log, |v| v["event"] == "run.finished")["runId"], "r1");
 }
 
 #[test]
 fn a_malformed_values_error_never_echoes_the_secret() {
     let (s, log) = session(true, 0);
-    let a = call(&s, &log, 1, "run.start", json!({ "skill": skill_json(false), "values": { "pw": 12345678 } }));
+    let a = call(&s, &log, 1, "run.start", json!({ "runId": "r1", "skill": skill_json(false), "values": { "pw": 12345678 } }));
     assert_eq!(a["error"]["code"], "bad_params");
     let text = a["error"]["message"].as_str().unwrap();
     assert_eq!(text, "values must map names to strings");
@@ -244,11 +256,11 @@ fn a_malformed_values_error_never_echoes_the_secret() {
 fn recording_and_running_exclude_each_other() {
     let (s, log) = session(true, 1);
     call(&s, &log, 1, "record.start", json!({ "program": "p", "shotsDir": "s" }));
-    let a = call(&s, &log, 2, "run.start", json!({ "skill": skill_json(false), "values": {} }));
+    let a = call(&s, &log, 2, "run.start", json!({ "runId": "r1", "skill": skill_json(false), "values": {} }));
     assert_eq!(a["error"]["code"], "busy");
     call(&s, &log, 3, "record.stop", Value::Null);
 
-    call(&s, &log, 4, "run.start", json!({ "skill": skill_json(false), "values": {} }));
+    call(&s, &log, 4, "run.start", json!({ "runId": "r1", "skill": skill_json(false), "values": {} }));
     let b = call(&s, &log, 5, "record.start", json!({ "program": "p", "shotsDir": "s" }));
     assert_eq!(b["error"]["code"], "busy");
 }
@@ -256,7 +268,7 @@ fn recording_and_running_exclude_each_other() {
 #[test]
 fn shutdown_stops_a_waiting_run() {
     let (s, log) = session(true, 0);
-    call(&s, &log, 1, "run.start", json!({ "skill": skill_json(false), "values": {} }));
+    call(&s, &log, 1, "run.start", json!({ "runId": "r1", "skill": skill_json(false), "values": {} }));
     wait_for(&log, |v| v["event"] == "run.approvalNeeded");
     s.shutdown();
     assert_eq!(wait_for(&log, |v| v["event"] == "run.finished")["status"], "denied");

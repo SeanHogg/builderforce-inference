@@ -22,11 +22,12 @@ pub struct ChannelHooks {
     stop: Arc<AtomicBool>,
     answers: Receiver<(usize, bool)>,
     pending: Pending,
+    run_id: String,
 }
 
 impl ChannelHooks {
-    pub fn new(emit: Emitter, stop: Arc<AtomicBool>, answers: Receiver<(usize, bool)>, pending: Pending) -> Self {
-        ChannelHooks { emit, stop, answers, pending }
+    pub fn new(emit: Emitter, run_id: String, stop: Arc<AtomicBool>, answers: Receiver<(usize, bool)>, pending: Pending) -> Self {
+        ChannelHooks { emit, stop, answers, pending, run_id }
     }
 
     fn wait_for_answer(&self, idx: usize) -> bool {
@@ -45,11 +46,11 @@ impl ChannelHooks {
 
 impl RunHooks for ChannelHooks {
     fn step_started(&mut self, idx: usize) {
-        (self.emit)(event("run.stepStarted", json!({ "idx": idx })));
+        (self.emit)(event("run.stepStarted", json!({ "runId": self.run_id, "idx": idx })));
     }
 
     fn step_finished(&mut self, idx: usize, outcome: StepOutcome, detail: Option<String>) {
-        let mut f = json!({ "idx": idx, "outcome": outcome.as_str() });
+        let mut f = json!({ "runId": self.run_id, "idx": idx, "outcome": outcome.as_str() });
         if let Some(d) = detail {
             f["detail"] = json!(d);
         }
@@ -60,7 +61,7 @@ impl RunHooks for ChannelHooks {
         // An answer that arrived before the gate opened is not an answer to it.
         while self.answers.try_recv().is_ok() {}
         *lock(&self.pending) = Some(idx);
-        (self.emit)(event("run.approvalNeeded", json!({ "idx": idx })));
+        (self.emit)(event("run.approvalNeeded", json!({ "runId": self.run_id, "idx": idx })));
         let approved = self.wait_for_answer(idx);
         *lock(&self.pending) = None;
         approved

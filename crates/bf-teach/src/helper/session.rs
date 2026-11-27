@@ -20,6 +20,7 @@ const COUNT_POLL: Duration = Duration::from_millis(300);
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 
 struct ActiveRun {
+    run_id: String,
     stop: Arc<AtomicBool>,
     answers: Sender<(usize, bool)>,
     pending: Pending,
@@ -190,6 +191,7 @@ impl Session {
 
     fn run_start(&self, params: &Value) -> Result<Value, Failure> {
         self.require_supported()?;
+        let run_id = str_param(params, "runId")?;
         // Parse errors never quote the input: `values` carries secrets.
         let skill: Skill = parse_field(params, "skill", "`skill` is not a valid skill")?
             .ok_or_else(|| bad_params("`skill` is required"))?;
@@ -208,17 +210,17 @@ impl Session {
         let (tx, rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let pending: Pending = Arc::default();
-        *slot = Some(ActiveRun { stop: stop.clone(), answers: tx, pending: pending.clone() });
+        *slot = Some(ActiveRun { run_id: run_id.clone(), stop: stop.clone(), answers: tx, pending: pending.clone() });
         drop(slot);
 
         let (backend, emit, run) = (self.backend.clone(), self.emit.clone(), self.run.clone());
         let spawned = std::thread::Builder::new().name("bf-teach-run".into()).spawn(move || {
-            let mut hooks = ChannelHooks::new(emit.clone(), stop, rx, pending);
+            let mut hooks = ChannelHooks::new(emit.clone(), run_id.clone(), stop, rx, pending);
             let outcome = catch_unwind(AssertUnwindSafe(|| backend.run(&skill, &values, &mut hooks)));
             let fields = match outcome {
-                Ok(Ok(status)) => json!({ "status": status.as_str() }),
-                Ok(Err(e)) => json!({ "status": "failed", "error": format!("{e:#}") }),
-                Err(_) => json!({ "status": "failed", "error": "the run stopped unexpectedly" }),
+                Ok(Ok(status)) => json!({ "runId": run_id, "status": status.as_str() }),
+                Ok(Err(e)) => json!({ "runId": run_id, "status": "failed", "error": format!("{e:#}") }),
+                Err(_) => json!({ "runId": run_id, "status": "failed", "error": "the run stopped unexpectedly" }),
             };
             // Announce and free the slot under one lock: a `run.start` sent on seeing
             // `run.finished` waits for the slot instead of being told `busy`.
@@ -235,14 +237,16 @@ impl Session {
 
     fn approve_answer(&self, params: &Value) -> Result<Value, Failure> {
         let idx = params.get("idx").and_then(Value::as_u64).ok_or_else(|| bad_params("`idx` must be a number"))? as usize;
+        let run_id = str_param(params, "runId")?;
         let approved = params.get("approved").and_then(Value::as_bool).ok_or_else(|| bad_params("`approved` must be a boolean"))?;
         let run = lock(&self.run);
         let Some(r) = run.as_ref() else {
             return Err(Failure::new("idle", "no run is waiting for an answer"));
         };
         // Held across the send, so the gate cannot close between the check and the answer.
+        // An answer meant for an earlier run (same idx, other runId) is not this gate's.
         let pending = lock(&r.pending);
-        if *pending != Some(idx) {
+        if r.run_id != run_id || *pending != Some(idx) {
             return Err(Failure::new("not_waiting", format!("step {idx} is not waiting for an answer")));
         }
         let _ = r.answers.send((idx, approved));
