@@ -3,7 +3,7 @@
 # empty string an unset secret becomes, and then fails the whole build. So no workflow
 # passes these to tauri-action directly: this step proves the .p12 imports and exports
 # them through $GITHUB_ENV, or leaves them unset so the build ships unsigned.
-# Used by release.yml here (Synapse) and by builderforce-spawn's release.yml, which
+# Used by Synapse, the headless Teach helper release, and builderforce-spawn's release.yml, which
 # references it as SeanHogg/builderforce-inference/.github/actions/macos-signing@main.
 name: macOS signing
 description: Export the Apple signing variables only when the certificate imports.

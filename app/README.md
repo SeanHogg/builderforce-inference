@@ -56,6 +56,10 @@ origin unchanged (the gateway's CORS allows it).
 
 ## Cut a release
 
+For CI verification, dispatch **Synapse desktop** with `verify_only` and the Builderforce VSIX URL
+or a draft release in this repository carrying an asset named `builderforce.vsix`. Supply the Spawn
+VSIX URL or let CI package the pinned Spawn source. This run uploads installers to Actions artifacts.
+
 1. Make sure the Builderforce and Spawn `.vsix` release assets exist.
 2. Either push a tag `synapse-v<version>` (for example `synapse-v2026.11.27`), or run the **Synapse desktop** workflow by hand with
    `version` and the two VSIX URLs. Tag-triggered runs read the URLs from the repository variables `BUILDERFORCE_VSIX_URL` and `SPAWN_VSIX_URL`.

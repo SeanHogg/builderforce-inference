@@ -80,12 +80,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-latest, platform: win32, arch: x64 }
+          # Code-OSS 1.140's native dependency installer recognizes Visual Studio 2022.
+          - { os: windows-2022, platform: win32, arch: x64 }
           - { os: macos-latest, platform: darwin, arch: arm64 }
           # Native Intel runner. If this label is ever unavailable, cross-build x64 on
           # macos-latest instead (os: macos-latest, plus npm_config_arch=x64 in the job env).
           - { os: macos-15-intel, platform: darwin, arch: x64 }
-          - { os: ubuntu-22.04, platform: linux, arch: x64 }
+          - { os: ubuntu-24.04, platform: linux, arch: x64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
