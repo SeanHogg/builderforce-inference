@@ -16,7 +16,7 @@ import { makeDmg } from './make-dmg.mjs';
 const STAGES = ['fetch', 'package', 'installer', 'all'];
 
 const APP = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const BUILD = join(APP, '.build');
+const BUILD = resolve(process.env.SYNAPSE_BUILD_DIR || join(APP, '.build'));
 const SRC = join(BUILD, 'vscode');
 const OUT = join(BUILD, 'out');
 const UPSTREAM_REPO = 'https://github.com/microsoft/vscode';

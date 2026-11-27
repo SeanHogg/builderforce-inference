@@ -37,6 +37,7 @@ permissions:
 
 env:
   VERSION: ${{ inputs.version || '' }}
+  SYNAPSE_BUILD_DIR: app/.build
 
 jobs:
   version:
@@ -95,6 +96,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Use a short Windows build path
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          $buildPath = Join-Path ([IO.Path]::GetPathRoot($env:RUNNER_TEMP)) 'synapse-build'
+          "SYNAPSE_BUILD_DIR=$($buildPath.Replace('\', '/'))" >> $env:GITHUB_ENV
       # Clone upstream first (the runner's preinstalled Node runs this), so the next step can
       # read upstream's own .nvmrc.
       - name: Fetch upstream
@@ -105,7 +112,7 @@ jobs:
           --version ${{ needs.version.outputs.version }}
       - uses: actions/setup-node@v4
         with:
-          node-version-file: app/.build/vscode/.nvmrc
+          node-version-file: ${{ env.SYNAPSE_BUILD_DIR }}/vscode/.nvmrc
       - name: Linux build dependencies
         if: matrix.platform == 'linux'
         shell: bash
@@ -206,13 +213,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          app="app/.build/VSCode-darwin-${{ matrix.arch }}/Synapse.app"
+          app="$SYNAPSE_BUILD_DIR/VSCode-darwin-${{ matrix.arch }}/Synapse.app"
           node app/scripts/sign-macos.mjs --app "$app" --identity "$APPLE_SIGNING_IDENTITY" \
             --entitlements app/build/darwin/entitlements.plist
       - name: Sign the Windows binaries
         if: matrix.platform == 'win32'
         shell: pwsh
-        run: ./app/scripts/sign-windows.ps1 -Config "$env:RUNNER_TEMP/sign.json" -Path app/.build/VSCode-win32-x64 -Recurse -Include '*.exe','*.dll'
+        run: ./app/scripts/sign-windows.ps1 -Config "$env:RUNNER_TEMP/sign.json" -Path "$env:SYNAPSE_BUILD_DIR/VSCode-win32-x64" -Recurse -Include '*.exe','*.dll'
 
       # Stage 2: the installer (.dmg / Inno setup / .deb).
       - name: Build the installer
@@ -230,7 +237,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for dmg in app/.build/out/*.dmg; do
+          for dmg in "$SYNAPSE_BUILD_DIR"/out/*.dmg; do
             codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$dmg"
             if [[ -n "${APPLE_ID:-}" ]]; then
               xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
@@ -242,7 +249,7 @@ jobs:
       - name: Sign the Windows installer
         if: matrix.platform == 'win32'
         shell: pwsh
-        run: ./app/scripts/sign-windows.ps1 -Config "$env:RUNNER_TEMP/sign.json" -Path app/.build/out -Include '*.exe'
+        run: ./app/scripts/sign-windows.ps1 -Config "$env:RUNNER_TEMP/sign.json" -Path "$env:SYNAPSE_BUILD_DIR/out" -Include '*.exe'
 
       - name: Upload to the release
         if: ${{ !inputs.verify_only }}
@@ -252,7 +259,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          for f in app/.build/out/*; do
+          for f in "$SYNAPSE_BUILD_DIR"/out/*; do
             gh release upload "${{ needs.version.outputs.tag }}" "$f" --clobber
           done
       - name: Upload verification installer
@@ -260,7 +267,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: synapse-${{ matrix.platform }}-${{ matrix.arch }}
-          path: app/.build/out/*
+          path: ${{ env.SYNAPSE_BUILD_DIR }}/out/*
           if-no-files-found: error
 
   # Runs even when a build leg failed, so the failure is reported here with a clear message and

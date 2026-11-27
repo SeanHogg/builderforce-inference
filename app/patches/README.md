@@ -9,9 +9,8 @@ made against the upstream checkout pinned in `../upstream.json`.
   `../product.json`.
 - A patch that no longer applies after a tag bump fails the build; regenerate it.
 
-`001-skip-unconfigured-copilot-shim.patch` makes upstream's installer task respect the absence
-of a default Copilot agent. Synapse ships its own agent extension. Upstream builds that configure
-Copilot still get its ripgrep shim.
+`001-skip-unconfigured-copilot-shim.patch` skips the bundled Copilot extension and its ripgrep
+shim when the product has no default Copilot agent. Synapse ships its own agent extension.
 
 `002-linux-generated-dependencies.patch` calculates package dependencies from the files
 Synapse ships. The desktop build omits the separately packaged tunnel CLI and uses the

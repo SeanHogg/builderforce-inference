@@ -27,6 +27,7 @@ site's download resolver, `Builderforce.ai/api/src/application/desktop/synapseIn
 Prerequisites: git, the Node version in upstream's `.nvmrc`, and upstream's native toolchain for your OS
 (Windows: VS 2022 Build Tools, Python and the Windows SDK with `signtool.exe` on PATH; Linux: `libx11-dev libxkbfile-dev libsecret-1-dev libkrb5-dev fakeroot dpkg`; macOS: Xcode CLI tools).
 You also need the two extension packages as `.vsix` files (the Builderforce extension and the Spawn extension).
+Set `SYNAPSE_BUILD_DIR` to use a different scratch directory. Windows CI uses a short path for Inno Setup.
 
 ```
 node app/scripts/build.mjs --platform win32 --arch x64 --version 2026.11.27 \
