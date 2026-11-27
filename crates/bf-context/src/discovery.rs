@@ -1,4 +1,4 @@
-//! The discovery file — how a client (such as the VS Code extension) finds the
+//! The discovery file — how a client (such as Synapse, the desktop app) finds the
 //! running service: `{ port, token, pid, version }` at `~/.builderforce/desktop.json`,
 //! readable only by this user. Written on start, withdrawn on stop; a stale file left by
 //! a crash is harmless because its port stops answering (clients probe `health`).

@@ -9,7 +9,7 @@ const EXACT_SYMBOL_BOOST: f32 = 0.05;
 
 /// How a hit was found. Serialized in the shared contract's words
 /// (`SemanticSearchHit.source` in `@builderforce/agent-tools`): `keyword`, `embedding`,
-/// `hybrid` — the VS Code tool passes it through as `via` unchanged.
+/// `hybrid` — the client's search tool passes it through as `via` unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {

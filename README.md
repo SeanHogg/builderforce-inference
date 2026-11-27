@@ -2,14 +2,14 @@
 
 > Part of [Builderforce open source](https://builderforce.ai/open-source): the MIT projects Builderforce.ai is built on.
 
-The Builderforce native inference engine (`bfi`) and local code-context service (`bf-context`). Run LLMs on your own machine with no Ollama required, and give the Builderforce VS Code extension fast local code search, repo maps and prompt compression. Status: see [docs/PRD-native-engine.md](docs/PRD-native-engine.md). GPU 70% vs llama-bench and live Bonsai 27B identity are not claimed. Keep `crates/bfi` `import-ollama` if you are converting an existing Ollama library.
+The Builderforce native inference engine (`bfi`) and local code-context service (`bf-context`). Run LLMs on your own machine with no Ollama required, and give Synapse and the Builderforce VS Code extension fast local code search, repo maps and prompt compression. Status: see [docs/PRD-native-engine.md](docs/PRD-native-engine.md). GPU 70% vs llama-bench and live Bonsai 27B identity are not claimed. Keep `crates/bfi` `import-ollama` if you are converting an existing Ollama library.
 
-## Synapse desktop app — retired (2026-11-27)
+## Synapse desktop app
 
-The Synapse Tauri desktop app is retired. The editor is VS Code with the Builderforce extension:
+Synapse desktop app: the app's source is no longer in this repo (2026-11-27). This repo ships the `bfi` engine and the `bf-context` service that Synapse uses.
 
-- Local models run with `bfi serve`, which announces itself in `~/.builderforce/bfi.json` (the extension discovers it), or in-editor via `@seanhogg/bfi-node`.
-- The code-context service is `bf-context serve`; it writes `~/.builderforce/desktop.json`, which the extension reads (the file name is a wire contract and is unchanged).
+- Local models run with `bfi serve`, which announces itself in `~/.builderforce/bfi.json` (Synapse and the Builderforce VS Code extension discover it), or in-process via `@seanhogg/bfi-node`.
+- The code-context service is `bf-context serve`; it writes `~/.builderforce/desktop.json`, which Synapse and the extension read (the file name is a wire contract and is unchanged).
 
 ## Install
 
@@ -29,7 +29,7 @@ GitHub Release binaries are not signed yet (owner signing secrets).
 | `crates/bfi-runtime` | Tokenizer, sampler, `mix_decode` concurrent token mixing and `generate_batch`, prefix cache, grammar-constrained decode, embeddings, model store, `bfi fit` |
 | `crates/bfi-server` | OpenAI / Anthropic / Ollama HTTP API |
 | `crates/bfi` | CLI: `pull`, `run`, `serve`, `fit`, `ls`, `rm`, `ps`, `bench` |
-| `crates/bf-context` | Loopback context service used by the Builderforce VS Code extension |
+| `crates/bf-context` | Loopback context service used by Synapse and the Builderforce VS Code extension |
 | `crates/bf-index` | Code index (tree-sitter, BM25, local embeddings, reference-ranked repo map) |
 | `crates/bf-compress` | LLMLingua-2 token-level prompt compression; code fences, paths and numbers are never touched (ONNX model behind the `compress` feature) |
 
@@ -57,10 +57,10 @@ cargo build -p bf-context --features compress
 
 ### `bf-context` commands
 
-Use **BuilderForce Workspace** in VS Code for MCP. Update any editor configuration that still launches `synapse mcp` or `bf-context mcp`. The extension can use the loopback context service for hybrid search and compression when available.
+Use **BuilderForce Workspace** (the Builderforce extension, in Synapse or VS Code) for MCP. Update any configuration that still launches `synapse mcp` or `bf-context mcp`. The extension can use the loopback context service for hybrid search and compression when available.
 
 ```sh
-bf-context serve                         # run the loopback service the VS Code extension discovers
+bf-context serve                         # run the loopback service the Builderforce extension discovers
 bf-context index <dir>                   # index a workspace once and print its status
 bf-context search <dir> <query>          # search a workspace and print the hits as JSON
 bf-context repo-map --root <dir> [--max-tokens N] [--focus <path>…] [--query <task>…]

@@ -19,7 +19,7 @@ const MAX_CLIENT_CHARS: usize = 32;
 pub struct Entry {
     /// Unix epoch milliseconds.
     pub at: u64,
-    /// Who asked: `vscode`, `mcp`, `cli`, or whatever a client names itself.
+    /// Who asked: `mcp`, `cli`, or whatever a client names itself.
     pub client: String,
     pub op: String,
     #[serde(skip_serializing_if = "Option::is_none")]

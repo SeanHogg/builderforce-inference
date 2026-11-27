@@ -1,6 +1,6 @@
-# Releases the headless binaries: the `bfi` inference engine and the `bf-context` local
-# code-context service, for Windows, macOS (arm64) and Linux. The Synapse desktop app is
-# retired (2026-11-27); VS Code with the Builderforce extension is the editor.
+# Releases the `bfi` inference engine and the `bf-context` local code-context service,
+# for Windows, macOS (arm64 and Intel) and Linux. The Synapse desktop app is not built
+# from this repo any more.
 #
 # Release-only on purpose: it runs on a `v*` tag or by hand, never on every push (a
 # three-OS native build on every commit would cost more than it proves).
@@ -71,7 +71,8 @@ jobs:
           set -euo pipefail
           tag="${{ steps.t.outputs.tag }}"
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --title "Builderforce inference ${{ steps.t.outputs.version }}" \
+            # --latest=false: releases/latest links on builderforce.ai must keep resolving to the last release that has Synapse installers.
+            gh release create "$tag" --latest=false --title "Builderforce inference ${{ steps.t.outputs.version }}" \
               --notes "The \`bfi\` inference engine and the \`bf-context\` local code-context service. Download the binaries for your platform below."
           fi
 
@@ -86,6 +87,9 @@ jobs:
             ext: .exe
           - os: macos-latest
             target: aarch64-apple-darwin
+            ext: ''
+          - os: macos-latest
+            target: x86_64-apple-darwin
             ext: ''
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu

@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tiny_http::{Header, Method, Response, Server};
 
 const MAX_BODY_BYTES: u64 = 2 * 1024 * 1024;
-/// The header a client names itself with (`vscode`, `mcp`, …) for "Recent activity".
+/// The header a client names itself with (`mcp`, `cli`, …) for "Recent activity".
 pub const CLIENT_HEADER: &str = "X-Builderforce-Client";
 
 pub struct Running {

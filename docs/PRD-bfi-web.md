@@ -1,4 +1,4 @@
-> Historical context: the Synapse desktop app that this document describes as the shipping host was retired on 2026-11-27. The `bfi` engine stays; VS Code with the Builderforce extension is the host.
+> Historical: describes the Synapse Tauri app, whose source left this repo on 2026-11-27.
 
 # bfi-web: 1-bit Bonsai in the browser on bfi's own crates
 
