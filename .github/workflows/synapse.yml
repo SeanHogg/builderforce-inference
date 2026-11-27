@@ -68,9 +68,15 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ steps.v.outputs.tag }}"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
+          title="Synapse ${{ steps.v.outputs.version }}"
+          if existing=$(gh release view "$tag" --json isDraft,name 2>/dev/null); then
+            if ! jq -e --arg title "$title" '.isDraft and .name == $title' <<< "$existing" >/dev/null; then
+              echo "::error::$tag already belongs to a different or published release"
+              exit 1
+            fi
+          else
             gh release create "$tag" --draft --latest=false --target "${{ github.sha }}" \
-              --title "Synapse ${{ steps.v.outputs.version }}" \
+              --title "$title" \
               --notes "Synapse desktop installers for Windows, macOS and Linux."
           fi
 
@@ -161,6 +167,12 @@ jobs:
         shell: pwsh
         run: |
           '{"productName":"Synapse","bundle":{}}' | Set-Content "$env:RUNNER_TEMP/sign.json"
+      - name: Put the Windows SDK on PATH
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          . ./app/scripts/windows-sdk.ps1
+          Split-Path -Parent (Get-WindowsSignTool) | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
       - name: Windows signing setup
         if: matrix.platform == 'win32'
         uses: ./.github/actions/windows-signing

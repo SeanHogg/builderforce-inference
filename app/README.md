@@ -25,7 +25,7 @@ site's download resolver, `Builderforce.ai/api/src/application/desktop/synapseIn
 ## Build locally
 
 Prerequisites: git, the Node version in upstream's `.nvmrc`, and upstream's native toolchain for your OS
-(Windows: VS Build Tools + Python; Linux: `libx11-dev libxkbfile-dev libsecret-1-dev libkrb5-dev fakeroot dpkg`; macOS: Xcode CLI tools).
+(Windows: VS 2022 Build Tools, Python and the Windows SDK with `signtool.exe` on PATH; Linux: `libx11-dev libxkbfile-dev libsecret-1-dev libkrb5-dev fakeroot dpkg`; macOS: Xcode CLI tools).
 You also need the two extension packages as `.vsix` files (the Builderforce extension and the Spawn extension).
 
 ```
