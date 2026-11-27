@@ -6,9 +6,8 @@
 #
 # Run it by hand (workflow_dispatch) or push a tag: synapse-v2026.11.27.
 #
-# The two extension packages are fetched from URLs. The release URLs are not fixed by this repo,
-# so they are workflow inputs, with the repository variables BUILDERFORCE_VSIX_URL and
-# SPAWN_VSIX_URL as the fallback for tag-triggered runs.
+# The Builderforce VSIX is supplied as a release URL. Spawn is built from pinned source unless
+# an explicit URL is supplied. Tag-triggered runs use BUILDERFORCE_VSIX_URL and SPAWN_VSIX_URL.
 name: Synapse desktop
 
 on:
@@ -21,7 +20,7 @@ on:
         description: 'URL of the builderforce-ai .vsix (default: repository variable BUILDERFORCE_VSIX_URL)'
         required: false
       spawn_vsix_url:
-        description: 'URL of the Spawn .vsix (default: repository variable SPAWN_VSIX_URL)'
+        description: 'Optional Spawn VSIX URL (uses SPAWN_VSIX_URL or packages the pinned source)'
         required: false
       verify_only:
         description: 'Build and upload CI artifacts without creating or publishing a release'
@@ -125,8 +124,8 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if [[ "$VERIFY_ONLY" != true && ( -z "$BF_URL" || -z "$SPAWN_URL" ) ]]; then
-            echo "::error::set the builderforce_vsix_url and spawn_vsix_url inputs (or the BUILDERFORCE_VSIX_URL / SPAWN_VSIX_URL repository variables)"
+          if [[ "$VERIFY_ONLY" != true && -z "$BF_URL" ]]; then
+            echo "::error::set builderforce_vsix_url or the BUILDERFORCE_VSIX_URL repository variable"
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/vsix"
@@ -285,6 +284,17 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          required=b549e456397c965b2550f4bc6d9247b199358557
+          live=$(curl -fsS --max-time 20 https://api.builderforce.ai/health | jq -er .commit)
+          if [[ ! "$live" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::The production API did not report a valid commit."
+            exit 1
+          fi
+          status=$(gh api "repos/SeanHogg/Builderforce.ai/compare/${required}...${live}" --jq .status)
+          if [[ "$status" != identical && "$status" != ahead ]]; then
+            echo "::error::The production API must include the Spawn and runtime ID migration before Synapse ships."
+            exit 1
+          fi
           tag="${{ needs.version.outputs.tag }}"
           gh release view "$tag" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/assets.txt"
           node app/scripts/check-assets.mjs "${{ needs.version.outputs.version }}" "$RUNNER_TEMP/assets.txt"

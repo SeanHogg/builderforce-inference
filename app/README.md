@@ -60,9 +60,10 @@ For CI verification, dispatch **Synapse desktop** with `verify_only` and the Bui
 or a draft release in this repository carrying an asset named `builderforce.vsix`. Supply the Spawn
 VSIX URL or let CI package the pinned Spawn source. This run uploads installers to Actions artifacts.
 
-1. Make sure the Builderforce and Spawn `.vsix` release assets exist.
+1. Make sure the Builderforce `.vsix` release asset exists.
 2. Either push a tag `synapse-v<version>` (for example `synapse-v2026.11.27`), or run the **Synapse desktop** workflow by hand with
-   `version` and the two VSIX URLs. Tag-triggered runs read the URLs from the repository variables `BUILDERFORCE_VSIX_URL` and `SPAWN_VSIX_URL`.
+   `version` and the Builderforce VSIX URL. Tag-triggered runs read `BUILDERFORCE_VSIX_URL`. Set `spawn_vsix_url` or `SPAWN_VSIX_URL`
+   to bundle a different Spawn build. Otherwise CI packages the pinned Spawn source.
 3. The workflow builds all four targets, signs them with the composite actions in `.github/actions/`, and attaches the installers to
    the release `v<version>`, which it creates as a DRAFT (at the workflow's commit). The `publish` job checks that every expected
    installer is attached (`expectedInstallers` in `lib.mjs`) and only then runs `gh release edit v<version> --draft=false --latest`; if any
