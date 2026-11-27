@@ -16,6 +16,9 @@ shim when the product has no default Copilot agent. Synapse ships its own agent 
 Synapse ships. The desktop build omits the separately packaged tunnel CLI and uses the
 generated dependency list in its Debian package.
 
+`003-download-debian-dependency-tool-once.patch` fetches the pinned Chromium scanner once per
+dependency calculation and stops on an HTTP error before invoking Perl.
+
 ## First CI-time task
 
 Upstream hard-codes "Visual Studio Code" in the Welcome / walkthrough strings (and a few other UI strings).
