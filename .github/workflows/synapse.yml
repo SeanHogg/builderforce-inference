@@ -110,9 +110,13 @@ jobs:
           node app/scripts/build.mjs --stage fetch
           --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
           --version ${{ needs.version.outputs.version }}
+      - name: Read the pinned Node version
+        id: vscode-node
+        shell: bash
+        run: printf 'version=%s\n' "$(tr -d '\r\n' < "$SYNAPSE_BUILD_DIR/vscode/.nvmrc")" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
         with:
-          node-version-file: ${{ env.SYNAPSE_BUILD_DIR }}/vscode/.nvmrc
+          node-version: ${{ steps.vscode-node.outputs.version }}
       - name: Linux build dependencies
         if: matrix.platform == 'linux'
         shell: bash
