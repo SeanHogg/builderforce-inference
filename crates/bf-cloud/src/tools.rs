@@ -20,8 +20,11 @@ pub struct PlatformTool {
     pub extension_id: String,
     /// Its name on that server; sent back on the call.
     pub tool: String,
-    /// The flat name the model sees (`builtin_tasks_create`).
+    /// The name the model sees (for example `platform__tasks_create`).
     pub name: String,
+    /// Previously advertised name, retained for clients replaying an older turn.
+    #[serde(default)]
+    pub legacy_name: Option<String>,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
@@ -59,7 +62,7 @@ impl Session {
     /// platform's `toolSurfaces.ts`).
     pub fn platform_tools(&self, surface: &str) -> Result<Vec<PlatformTool>, CloudError> {
         let v: Value = self
-            .gateway("GET", &format!("/mcp/tools?surface={surface}&format=openai"), None, crate::TIMEOUT)?
+            .gateway("GET", &format!("/mcp/tools?surface={surface}&format=openai&names=canonical"), None, crate::TIMEOUT)?
             .into_json()
             .map_err(|e| CloudError::Unreachable(e.to_string()))?;
         Ok(serde_json::from_value(v.get("tools").cloned().unwrap_or(json!([]))).unwrap_or_default())
@@ -110,6 +113,20 @@ mod tests {
             "approvalRequired": false, "modelTool": function,
         })).unwrap();
         assert!(!tool.writes());
+        assert_eq!(tool.as_function(), function);
+    }
+
+    #[test]
+    fn canonical_catalog_retains_the_previously_advertised_alias() {
+        let function = json!({ "type": "function", "function": {
+            "name": "platform__tasks_list", "description": "List tasks",
+            "parameters": { "type": "object" }
+        } });
+        let tool: PlatformTool = serde_json::from_value(json!({
+            "extensionId": "builtin", "tool": "tasks.list", "name": "platform__tasks_list",
+            "legacyName": "builtin_tasks_list", "approvalRequired": false, "modelTool": function,
+        })).unwrap();
+        assert_eq!(tool.legacy_name.as_deref(), Some("builtin_tasks_list"));
         assert_eq!(tool.as_function(), function);
     }
 }

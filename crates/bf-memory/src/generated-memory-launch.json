@@ -1,0 +1,34 @@
+{
+  "posix": {
+    "command": "npx",
+    "args": [
+      "-y",
+      "-p",
+      "@seanhogg/builderforce-memory-mcp",
+      "-p",
+      "@seanhogg/builderforce-memory",
+      "-p",
+      "@seanhogg/builderforce-memory-engine",
+      "-p",
+      "fake-indexeddb",
+      "builderforce-memory-mcp"
+    ]
+  },
+  "windows": {
+    "command": "cmd",
+    "args": [
+      "/c",
+      "npx",
+      "-y",
+      "-p",
+      "@seanhogg/builderforce-memory-mcp",
+      "-p",
+      "@seanhogg/builderforce-memory",
+      "-p",
+      "@seanhogg/builderforce-memory-engine",
+      "-p",
+      "fake-indexeddb",
+      "builderforce-memory-mcp"
+    ]
+  }
+}

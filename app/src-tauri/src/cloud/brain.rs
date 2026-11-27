@@ -38,7 +38,7 @@ const EVENT: &str = "brain-reply";
 const SYSTEM: &str = "You are the Brain in Synapse, the person's Builderforce desktop app. \
 Answer directly and concisely. You can see the conversation and, below, what the person's private \
 Evermind recalls about the question from their own tools on this machine — use it when it is relevant \
-and say so; never invent memories. You have the workspace's platform tools (`builtin_<domain>_<method>`: \
+and say so; never invent memories. You have the workspace's platform tools (\
 projects, tickets, boards, specs, OKRs, and the workspace's connectors). Resolve names to ids with the \
 list/get tools before acting. Read-only tools run at once; a tool that changes something is shown to the \
 person to approve, so call it directly when you have the details — if they decline you get `{\"cancelled\": true}`, \
@@ -131,7 +131,7 @@ fn run_tool(s: &Session, tools: &Toolbox, call: &ToolCall, progress: &Progress) 
         Ok(v @ Value::Object(_)) => v,
         _ => return Ok(Outcome::Failed(format!("the arguments for {} are not a JSON object", call.name))),
     };
-    let tool_label = label(&tool.name);
+    let tool_label = label(tool.legacy_name.as_deref().unwrap_or(&tool.name));
     if tool.writes() && !progress.approve(tool_label.clone(), args.to_string()) {
         return Ok(Outcome::Declined);
     }

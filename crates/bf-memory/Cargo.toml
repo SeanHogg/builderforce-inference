@@ -10,3 +10,5 @@ repository.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+rmcp = { version = "3.12.0", default-features = false, features = ["client", "transport-child-process"] }
+tokio.workspace = true

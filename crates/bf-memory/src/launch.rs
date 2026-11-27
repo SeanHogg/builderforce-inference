@@ -10,24 +10,29 @@
 //!    writes into every host (`buildServerSpec` in memory-mcp's `install/server-spec.ts`).
 
 use crate::LaunchSpec;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 pub const LAUNCH_ENV: &str = "SYNAPSE_MEMORY_MCP";
 
-const MCP_PACKAGE: &str = "@seanhogg/builderforce-memory-mcp";
-const MCP_BIN: &str = "builderforce-memory-mcp";
-/// Optional peers of the MCP package that `npx` does not pull by itself.
-const RUNTIME_PEERS: [&str; 3] = ["@seanhogg/builderforce-memory", "@seanhogg/builderforce-memory-engine", "fake-indexeddb"];
 const CHECKOUT_BIN: [&str; 6] = ["builderforce-memory", "packages", "memory-mcp", "dist", "bin", "stdio.js"];
 
+#[derive(Deserialize)]
+struct PublishedLaunch {
+    posix: LaunchSpec,
+    windows: LaunchSpec,
+}
+
 fn npx(windows: bool) -> LaunchSpec {
-    let mut args = vec!["-p".to_string(), MCP_PACKAGE.into()];
-    for p in RUNTIME_PEERS {
-        args.push("-p".into());
-        args.push(p.into());
-    }
-    args.push(MCP_BIN.into());
-    LaunchSpec::npx(args, windows)
+    // The Memory installer owns these commands. Regenerate the snapshot with
+    // `node crates/bf-memory/sync-launch.mjs` from a built Memory checkout.
+    static SPEC: OnceLock<PublishedLaunch> = OnceLock::new();
+    let spec = SPEC.get_or_init(|| {
+        serde_json::from_str(include_str!("generated-memory-launch.json"))
+            .expect("valid generated Memory launch spec")
+    });
+    if windows { spec.windows.clone() } else { spec.posix.clone() }
 }
 
 /// The launch spec in effect for this process.
@@ -70,9 +75,11 @@ mod tests {
         let spec = resolve_from(None, None, true);
         assert_eq!(spec.command, "cmd");
         assert_eq!(&spec.args[..3], ["/c", "npx", "-y"]);
-        assert_eq!(spec.args.last().unwrap(), MCP_BIN);
+        assert_eq!(spec.args.last().unwrap(), "builderforce-memory-mcp");
         assert!(spec.args.iter().any(|a| a == "fake-indexeddb"));
-        assert_eq!(resolve_from(None, None, false).command, "npx");
+        let posix = resolve_from(None, None, false);
+        assert_eq!(posix.command, "npx");
+        assert_eq!(&spec.args[2..], posix.args);
     }
 
     #[test]

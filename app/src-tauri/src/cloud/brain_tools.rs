@@ -26,7 +26,12 @@ impl Toolbox {
     }
 
     pub fn find(&self, name: &str) -> Option<&PlatformTool> {
-        self.tools.iter().find(|tool| tool.name == name)
+        if let Some(tool) = self.tools.iter().find(|tool| tool.name == name) {
+            return Some(tool);
+        }
+        let mut aliases = self.tools.iter().filter(|tool| tool.legacy_name.as_deref() == Some(name));
+        let tool = aliases.next()?;
+        aliases.next().is_none().then_some(tool)
     }
 
     pub fn offered(&self) -> Vec<Value> {

@@ -4,7 +4,7 @@
 //! runs and the private model all live in `builderforce-memory` — the engine owns the
 //! domain, `builderforce-memory-mcp` persists it (`memory.json`, `experience.json`,
 //! `episodes/`) and serves it. This crate finds that server (see [`launch`]) and talks to
-//! to the private Evermind process over stdio.
+//! the private Evermind process over stdio.
 
 mod client;
 pub mod launch;
