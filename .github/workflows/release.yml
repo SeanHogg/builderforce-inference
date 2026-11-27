@@ -1,6 +1,5 @@
 # Releases the `bfi` inference engine and the `bf-context` local code-context service,
-# for Windows, macOS (arm64 and Intel) and Linux. The Synapse desktop app is not built
-# from this repo any more.
+# for Windows, macOS (arm64 and Intel) and Linux. Synapse uses its own workflow.
 #
 # Release-only on purpose: it runs on a `v*` tag or by hand, never on every push (a
 # three-OS native build on every commit would cost more than it proves).
@@ -64,8 +63,7 @@ jobs:
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-      # The cli jobs upload into this release, so it must exist first.
-      - name: Create the release
+      - name: Create the draft release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -74,7 +72,7 @@ jobs:
           tag="${{ steps.t.outputs.tag }}"
           if ! gh release view "$tag" >/dev/null 2>&1; then
             # --latest=false: releases/latest links on builderforce.ai must keep resolving to the last release that has Synapse installers.
-            gh release create "$tag" --latest=false --title "Builderforce inference ${{ steps.t.outputs.version }}" \
+            gh release create "$tag" --draft --target "$GITHUB_SHA" --latest=false --title "Builderforce inference ${{ steps.t.outputs.version }}" \
               --notes "The \`bfi\` inference engine and the \`bf-context\` local code-context service. Download the binaries for your platform below."
           fi
 
@@ -90,7 +88,7 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             ext: ''
-          - os: macos-latest
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             ext: ''
           - os: ubuntu-22.04
@@ -111,6 +109,23 @@ jobs:
       - name: Build bf-teach-helper
         if: runner.os != 'Linux'
         run: cargo build --release -p bf-teach --bin bf-teach-helper --target ${{ matrix.target }}
+      - name: Import macOS signing certificate
+        if: runner.os == 'macOS'
+        uses: ./.github/actions/macos-signing
+        with:
+          certificate: ${{ secrets.APPLE_CERTIFICATE }}
+          certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          signing-identity: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          import-for-codesign: 'true'
+      - name: Sign and verify the macOS Teach helper
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${APPLE_SIGNING_IDENTITY:?Configure the Apple Developer ID signing certificate and identity}"
+          helper="target/${{ matrix.target }}/release/bf-teach-helper"
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --options runtime --timestamp "$helper"
+          codesign --verify --strict "$helper"
       - name: Upload to the release
         shell: bash
         env:
@@ -125,3 +140,13 @@ jobs:
             cp "$src" "$dest"
             gh release upload "${{ needs.tag.outputs.tag }}" "$dest" --clobber
           done
+
+  publish:
+    needs: [tag, cli]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Publish the completed headless release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "${{ needs.tag.outputs.tag }}" --draft=false --latest=false

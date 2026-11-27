@@ -23,6 +23,10 @@ on:
       spawn_vsix_url:
         description: 'URL of the Spawn .vsix (default: repository variable SPAWN_VSIX_URL)'
         required: false
+      verify_only:
+        description: 'Build and upload CI artifacts without creating or publishing a release'
+        type: boolean
+        default: false
   push:
     tags: ['synapse-v*']
 
@@ -53,6 +57,7 @@ jobs:
       # The build jobs upload into this release, so it must exist first. It is a draft until the
       # publish job has checked that every installer is attached.
       - name: Create the draft release if missing
+        if: ${{ !inputs.verify_only }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -104,15 +109,27 @@ jobs:
         env:
           BF_URL: ${{ inputs.builderforce_vsix_url || vars.BUILDERFORCE_VSIX_URL }}
           SPAWN_URL: ${{ inputs.spawn_vsix_url || vars.SPAWN_VSIX_URL }}
+          VERIFY_ONLY: ${{ inputs.verify_only || false }}
         run: |
           set -euo pipefail
-          if [[ -z "$BF_URL" || -z "$SPAWN_URL" ]]; then
+          if [[ "$VERIFY_ONLY" != true && ( -z "$BF_URL" || -z "$SPAWN_URL" ) ]]; then
             echo "::error::set the builderforce_vsix_url and spawn_vsix_url inputs (or the BUILDERFORCE_VSIX_URL / SPAWN_VSIX_URL repository variables)"
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/vsix"
+          if [[ -z "$BF_URL" ]]; then
+            BF_URL=$(curl -fsSL https://open-vsx.org/api/builderforce/builderforce-ai/latest | jq -er '.files.download')
+          fi
           curl -fsSL "$BF_URL" -o "$RUNNER_TEMP/vsix/builderforce.vsix"
-          curl -fsSL "$SPAWN_URL" -o "$RUNNER_TEMP/vsix/spawn.vsix"
+          if [[ -n "$SPAWN_URL" ]]; then
+            curl -fsSL "$SPAWN_URL" -o "$RUNNER_TEMP/vsix/spawn.vsix"
+          else
+            spawn="$RUNNER_TEMP/spawn"
+            git clone --filter=blob:none https://github.com/SeanHogg/builderforce-spawn.git "$spawn"
+            git -C "$spawn" checkout 1f6a10b
+            npm --prefix "$spawn/extension" ci --no-audit --no-fund
+            npm --prefix "$spawn/extension" run package -- --out "$RUNNER_TEMP/vsix/spawn.vsix"
+          fi
 
       # Signing setup. The composite actions were written for Tauri: macOS exports the Apple
       # variables only when the certificate imports; Windows writes a signCommand or certificate
@@ -127,19 +144,7 @@ jobs:
           apple-id: ${{ secrets.APPLE_ID }}
           apple-password: ${{ secrets.APPLE_PASSWORD }}
           team-id: ${{ secrets.APPLE_TEAM_ID }}
-      - name: Import the macOS signing certificate
-        if: matrix.platform == 'darwin' && env.APPLE_CERTIFICATE != '' && env.APPLE_SIGNING_IDENTITY != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          keychain="$RUNNER_TEMP/build.keychain-db"
-          security create-keychain -p ci "$keychain"
-          security default-keychain -s "$keychain"
-          security unlock-keychain -p ci "$keychain"
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci "$keychain"
-          rm -f "$RUNNER_TEMP/cert.p12"
+          import-for-codesign: 'true'
       - name: Windows signing configuration
         if: matrix.platform == 'win32'
         shell: pwsh
@@ -213,6 +218,7 @@ jobs:
         run: ./app/scripts/sign-windows.ps1 -Config "$env:RUNNER_TEMP/sign.json" -Path app/.build/out -Include '*.exe'
 
       - name: Upload to the release
+        if: ${{ !inputs.verify_only }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -222,12 +228,19 @@ jobs:
           for f in app/.build/out/*; do
             gh release upload "${{ needs.version.outputs.tag }}" "$f" --clobber
           done
+      - name: Upload verification installer
+        if: ${{ inputs.verify_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: synapse-${{ matrix.platform }}-${{ matrix.arch }}
+          path: app/.build/out/*
+          if-no-files-found: error
 
   # Runs even when a build leg failed, so the failure is reported here with a clear message and
   # the release stays a draft.
   publish:
     needs: [version, build]
-    if: ${{ always() && needs.version.result == 'success' }}
+    if: ${{ always() && !inputs.verify_only && needs.version.result == 'success' }}
     runs-on: ubuntu-22.04
     steps:
       - name: Refuse a partial release
