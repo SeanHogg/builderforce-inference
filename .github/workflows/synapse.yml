@@ -27,6 +27,9 @@ on:
         description: 'Build and upload CI artifacts without creating or publishing a release'
         type: boolean
         default: false
+      builderforce_vsix_ci_tag:
+        description: 'Optional draft release in this repository carrying builderforce.vsix for a verification build'
+        type: string
   push:
     tags: ['synapse-v*']
 
@@ -110,6 +113,9 @@ jobs:
           BF_URL: ${{ inputs.builderforce_vsix_url || vars.BUILDERFORCE_VSIX_URL }}
           SPAWN_URL: ${{ inputs.spawn_vsix_url || vars.SPAWN_VSIX_URL }}
           VERIFY_ONLY: ${{ inputs.verify_only || false }}
+          BF_CI_TAG: ${{ inputs.builderforce_vsix_ci_tag }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [[ "$VERIFY_ONLY" != true && ( -z "$BF_URL" || -z "$SPAWN_URL" ) ]]; then
@@ -117,16 +123,20 @@ jobs:
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/vsix"
-          if [[ -z "$BF_URL" ]]; then
-            BF_URL=$(curl -fsSL https://open-vsx.org/api/builderforce/builderforce-ai/latest | jq -er '.files.download')
+          if [[ "$VERIFY_ONLY" == true && -n "$BF_CI_TAG" ]]; then
+            gh release download "$BF_CI_TAG" --pattern builderforce.vsix --dir "$RUNNER_TEMP/vsix"
+          elif [[ -n "$BF_URL" ]]; then
+            curl -fsSL "$BF_URL" -o "$RUNNER_TEMP/vsix/builderforce.vsix"
+          else
+            echo "::error::provide builderforce_vsix_url or builderforce_vsix_ci_tag"
+            exit 1
           fi
-          curl -fsSL "$BF_URL" -o "$RUNNER_TEMP/vsix/builderforce.vsix"
           if [[ -n "$SPAWN_URL" ]]; then
             curl -fsSL "$SPAWN_URL" -o "$RUNNER_TEMP/vsix/spawn.vsix"
           else
             spawn="$RUNNER_TEMP/spawn"
             git clone --filter=blob:none https://github.com/SeanHogg/builderforce-spawn.git "$spawn"
-            git -C "$spawn" checkout 1f6a10b
+            git -C "$spawn" checkout 1f6a10b6832ecf0d3a6585a489ecdec34d3f9073
             npm --prefix "$spawn/extension" ci --no-audit --no-fund
             npm --prefix "$spawn/extension" run package -- --out "$RUNNER_TEMP/vsix/spawn.vsix"
           fi
