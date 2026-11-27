@@ -1,0 +1,2 @@
+# Unified diff context keeps upstream indentation, including space-prefixed tabs.
+*.patch text eol=lf -whitespace

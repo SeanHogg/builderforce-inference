@@ -51,11 +51,16 @@ function parseArgs(argv) {
 function fetchUpstream(tag) {
   if (existsSync(join(SRC, '.git'))) {
     const head = spawnSync('git', ['describe', '--tags', '--exact-match'], { cwd: SRC, encoding: 'utf8' }).stdout?.trim();
-    if (head === tag) { console.log(`reusing checkout at ${tag}`); run('git', ['checkout', '--', '.']); return; }
+    if (head === tag) {
+      console.log(`reusing checkout at ${tag}`);
+      run('git', ['config', 'core.autocrlf', 'false']);
+      run('git', ['checkout', '--', '.']);
+      return;
+    }
     rmSync(SRC, { recursive: true, force: true });
   }
   mkdirSync(BUILD, { recursive: true });
-  run('git', ['clone', '--depth', '1', '--branch', tag, UPSTREAM_REPO, SRC], BUILD);
+  run('git', ['clone', '--config', 'core.autocrlf=false', '--depth', '1', '--branch', tag, UPSTREAM_REPO, SRC], BUILD);
 }
 
 /** Step 2: Synapse's product.json merged over upstream's. */
