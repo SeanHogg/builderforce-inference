@@ -30,6 +30,7 @@ GitHub Release binaries are not signed yet (owner signing secrets).
 | `crates/bfi-server` | OpenAI / Anthropic / Ollama HTTP API |
 | `crates/bfi` | CLI: `pull`, `run`, `serve`, `fit`, `ls`, `rm`, `ps`, `bench` |
 | `crates/bf-context` | Loopback context service used by Synapse and the Builderforce VS Code extension |
+| `crates/bf-teach` | `bf-teach-helper`: records a program's UI actions and replays them, over JSON lines on stdin/stdout (Windows and macOS) |
 | `crates/bf-index` | Code index (tree-sitter, BM25, local embeddings, reference-ranked repo map) |
 | `crates/bf-compress` | LLMLingua-2 token-level prompt compression; code fences, paths and numbers are never touched (ONNX model behind the `compress` feature) |
 

@@ -9,15 +9,13 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 rand.workspace = true
 # Process scoping and screenshots are cross-platform (Windows, macOS, Linux), so they
 # live in the common dependencies; the platform crates below are per-OS.
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 xcap = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
-
-[dev-dependencies]
-serde_json.workspace = true
 
 # Everything that touches the desktop is per-platform. Windows (UI Automation) and macOS
 # (Accessibility + CGEvent) have full implementations; elsewhere the crate builds and

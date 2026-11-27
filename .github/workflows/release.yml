@@ -5,7 +5,8 @@
 # Release-only on purpose: it runs on a `v*` tag or by hand, never on every push (a
 # three-OS native build on every commit would cost more than it proves).
 #
-# Assets are named `bfi-<target><ext>` and `bf-context-<target><ext>`.
+# Assets are named `bfi-<target><ext>` and `bf-context-<target><ext>`, plus
+# `bf-teach-helper-<target><ext>` for Windows and macOS.
 name: Release
 
 on:
@@ -105,13 +106,19 @@ jobs:
           key: cli-${{ matrix.target }}
       - name: Build bfi and bf-context
         run: cargo build --release -p bfi -p bf-context --target ${{ matrix.target }}
+      # The teach helper drives the desktop (UI Automation / Accessibility): no Linux asset.
+      - name: Build bf-teach-helper
+        if: runner.os != 'Linux'
+        run: cargo build --release -p bf-teach --bin bf-teach-helper --target ${{ matrix.target }}
       - name: Upload to the release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          for bin in bfi bf-context; do
+          bins="bfi bf-context"
+          if [[ "${{ runner.os }}" != "Linux" ]]; then bins="$bins bf-teach-helper"; fi
+          for bin in $bins; do
             src="target/${{ matrix.target }}/release/${bin}${{ matrix.ext }}"
             dest="${bin}-${{ matrix.target }}${{ matrix.ext }}"
             cp "$src" "$dest"

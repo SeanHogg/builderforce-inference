@@ -257,9 +257,9 @@ struct Runner<'a> {
     hooks: &'a mut dyn RunHooks,
 }
 
-pub fn run_skill(skill: &Skill, values: &BTreeMap<String, String>, hooks: &mut dyn RunHooks) -> Result<RunStatus> {
-    // Every parameter resolved up front: the value given, else the demonstration's. A
-    // secret has no default, so a missing one stops the run before anything moves.
+/// Every parameter resolved up front: the value given, else the demonstration's. A
+/// secret has no default, so a missing one stops the run before anything moves.
+pub fn resolve_params(skill: &Skill, values: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>> {
     let mut resolved = BTreeMap::new();
     for p in &skill.params {
         match values.get(&p.name).cloned().or_else(|| p.default.clone()) {
@@ -269,6 +269,11 @@ pub fn run_skill(skill: &Skill, values: &BTreeMap<String, String>, hooks: &mut d
             None => return Err(anyhow!("a value for “{}” is needed", p.label)),
         }
     }
+    Ok(resolved)
+}
+
+pub fn run_skill(skill: &Skill, values: &BTreeMap<String, String>, hooks: &mut dyn RunHooks) -> Result<RunStatus> {
+    let resolved = resolve_params(skill, values)?;
     let values = &resolved;
     let child = std::process::Command::new(&skill.program)
         .args(&skill.args)

@@ -18,6 +18,7 @@
 //! the moment recording or replay is tried.
 
 pub mod engine;
+pub mod helper;
 pub mod model;
 pub mod platform;
 pub mod procs;
