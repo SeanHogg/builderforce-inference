@@ -177,10 +177,8 @@ jobs:
         run: |
           set -euo pipefail
           app="app/.build/VSCode-darwin-${{ matrix.arch }}/Synapse.app"
-          codesign --force --deep --options runtime --timestamp \
-            --entitlements app/build/darwin/entitlements.plist \
-            --sign "$APPLE_SIGNING_IDENTITY" "$app"
-          codesign --verify --deep --strict --verbose=2 "$app"
+          node app/scripts/sign-macos.mjs --app "$app" --identity "$APPLE_SIGNING_IDENTITY" \
+            --entitlements app/build/darwin/entitlements.plist
       - name: Sign the Windows binaries
         if: matrix.platform == 'win32'
         shell: pwsh
