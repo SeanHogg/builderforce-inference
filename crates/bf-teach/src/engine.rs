@@ -43,6 +43,11 @@ impl Recording {
         self.steps.lock().unwrap().clone()
     }
 
+    /// How many steps so far, without copying them.
+    pub fn step_count(&self) -> usize {
+        self.steps.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
     /// Why recording ended early, if it did (the program could not start, for one).
     pub fn error(&self) -> Option<String> {
         self.error.lock().unwrap().clone()

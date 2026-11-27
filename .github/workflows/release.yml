@@ -35,6 +35,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p bf-index -p bf-context --no-default-features
       - run: cargo test -p bfi-server -p bfi-runtime
+      - run: cargo test -p bf-teach --lib
 
   tag:
     runs-on: ubuntu-22.04

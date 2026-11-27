@@ -1,7 +1,7 @@
 //! Protocol tests against a fake backend; nothing here touches the real desktop.
 
 use super::backend::{Backend, RecordHandle};
-use super::hooks::ChannelHooks;
+use super::hooks::{ChannelHooks, Pending};
 use super::proto::{self, Emitter};
 use super::session::Session;
 use crate::model::{Action, ElementRef, RecordedStep, RunStatus, Skill};
@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -40,6 +40,8 @@ impl RecordHandle for FakeRec {
 struct FakeBackend {
     supported: bool,
     recorded_steps: usize,
+    /// When set, a run waits for this before doing anything (so a test can act first).
+    hold: Mutex<Option<Receiver<()>>>,
 }
 
 impl Backend for FakeBackend {
@@ -53,6 +55,9 @@ impl Backend for FakeBackend {
         Ok(Box::new(FakeRec(self.recorded_steps)))
     }
     fn run(&self, _: &Skill, _: &BTreeMap<String, String>, hooks: &mut dyn RunHooks) -> Result<RunStatus> {
+        if let Some(rx) = self.hold.lock().unwrap().take() {
+            let _ = rx.recv();
+        }
         hooks.step_started(0);
         if !hooks.approve(0) {
             return Ok(RunStatus::Denied);
@@ -64,10 +69,21 @@ impl Backend for FakeBackend {
 type Log = Arc<Mutex<Vec<Value>>>;
 
 fn session(supported: bool, recorded_steps: usize) -> (Session, Log) {
+    let (s, log, _) = held_session(supported, recorded_steps);
+    (s, log)
+}
+
+/// A session whose first run waits until the returned sender fires.
+fn held_session(supported: bool, recorded_steps: usize) -> (Session, Log, Sender<()>) {
     let log: Log = Arc::default();
     let sink = log.clone();
     let emit: Emitter = Arc::new(move |v| sink.lock().unwrap().push(v));
-    (Session::new(Arc::new(FakeBackend { supported, recorded_steps }), emit), log)
+    let (tx, rx) = channel();
+    let backend = FakeBackend { supported, recorded_steps, hold: Mutex::new(None) };
+    // Only the `held` tests keep `tx`; for the rest the sender is dropped, which releases
+    // the run at once.
+    *backend.hold.lock().unwrap() = Some(rx);
+    (Session::new(Arc::new(backend), emit), log, tx)
 }
 
 fn wait_for(log: &Log, mut pred: impl FnMut(&Value) -> bool) -> Value {
@@ -180,14 +196,81 @@ fn approval_blocks_until_the_matching_idx_is_answered() {
     let events: Log = Arc::default();
     let sink = events.clone();
     let emit: Emitter = Arc::new(move |v| sink.lock().unwrap().push(v));
-    let mut hooks = ChannelHooks::new(emit, Arc::new(AtomicBool::new(false)), rx);
-    // A stale answer for another step is skipped; the one for idx 3 decides.
-    tx.send((7, true)).unwrap();
-    tx.send((3, false)).unwrap();
+    let pending: Pending = Arc::default();
+    let mut hooks = ChannelHooks::new(emit, Arc::new(AtomicBool::new(false)), rx, pending.clone());
+    // Answers sent once the gate is open: one for another step is skipped, the one for
+    // idx 3 decides.
+    let answerer = std::thread::spawn(move || {
+        while *pending.lock().unwrap() != Some(3) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        tx.send((7, true)).unwrap();
+        tx.send((3, false)).unwrap();
+    });
     assert!(!hooks.approve(3));
+    answerer.join().unwrap();
     assert_eq!(events.lock().unwrap()[0], json!({ "event": "run.approvalNeeded", "idx": 3 }));
-    tx.send((4, true)).unwrap();
-    assert!(hooks.approve(4));
+}
+
+/// Regression: an answer sent before the gate opened used to be queued and then
+/// silently approve the gate the moment it opened.
+#[test]
+fn an_answer_sent_before_the_gate_opens_is_refused_and_does_not_approve_it() {
+    let (s, log, release) = held_session(true, 0);
+    call(&s, &log, 1, "run.start", json!({ "skill": skill_json(false), "values": {} }));
+    let early = call(&s, &log, 2, "approve.answer", json!({ "idx": 0, "approved": true }));
+    assert_eq!(early["error"]["code"], "not_waiting");
+
+    release.send(()).unwrap();
+    wait_for(&log, |v| v["event"] == "run.approvalNeeded");
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(log.lock().unwrap().iter().all(|v| v["event"] != "run.finished"), "the gate must still be waiting");
+
+    assert_eq!(call(&s, &log, 3, "approve.answer", json!({ "idx": 0, "approved": false }))["result"], json!({}));
+    assert_eq!(wait_for(&log, |v| v["event"] == "run.finished")["status"], "denied");
+}
+
+#[test]
+fn a_malformed_values_error_never_echoes_the_secret() {
+    let (s, log) = session(true, 0);
+    let a = call(&s, &log, 1, "run.start", json!({ "skill": skill_json(false), "values": { "pw": 12345678 } }));
+    assert_eq!(a["error"]["code"], "bad_params");
+    let text = a["error"]["message"].as_str().unwrap();
+    assert_eq!(text, "values must map names to strings");
+    assert!(!text.contains("12345678"));
+}
+
+#[test]
+fn recording_and_running_exclude_each_other() {
+    let (s, log) = session(true, 1);
+    call(&s, &log, 1, "record.start", json!({ "program": "p", "shotsDir": "s" }));
+    let a = call(&s, &log, 2, "run.start", json!({ "skill": skill_json(false), "values": {} }));
+    assert_eq!(a["error"]["code"], "busy");
+    call(&s, &log, 3, "record.stop", Value::Null);
+
+    call(&s, &log, 4, "run.start", json!({ "skill": skill_json(false), "values": {} }));
+    let b = call(&s, &log, 5, "record.start", json!({ "program": "p", "shotsDir": "s" }));
+    assert_eq!(b["error"]["code"], "busy");
+}
+
+#[test]
+fn shutdown_stops_a_waiting_run() {
+    let (s, log) = session(true, 0);
+    call(&s, &log, 1, "run.start", json!({ "skill": skill_json(false), "values": {} }));
+    wait_for(&log, |v| v["event"] == "run.approvalNeeded");
+    s.shutdown();
+    assert_eq!(wait_for(&log, |v| v["event"] == "run.finished")["status"], "denied");
+}
+
+#[test]
+fn reads_lines_without_trusting_their_encoding_or_size() {
+    use std::io::Cursor;
+    let mut r = Cursor::new(b"ok\n\xff\xfe\nabcdefghijklmnop\nlast".to_vec());
+    assert_eq!(super::read_line(&mut r, 8).unwrap(), super::Line::Text("ok\n".into()));
+    assert_eq!(super::read_line(&mut r, 8).unwrap(), super::Line::NotUtf8);
+    assert_eq!(super::read_line(&mut r, 8).unwrap(), super::Line::TooLong);
+    assert_eq!(super::read_line(&mut r, 8).unwrap(), super::Line::Text("last".into()));
+    assert_eq!(super::read_line(&mut r, 8).unwrap(), super::Line::Eof);
 }
 
 #[test]

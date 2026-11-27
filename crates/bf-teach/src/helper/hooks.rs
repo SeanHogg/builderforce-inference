@@ -1,27 +1,45 @@
 //! [`RunHooks`] over the protocol: progress goes out as events, and an approval gate
 //! blocks the run thread until the matching `approve.answer` arrives.
 
-use super::proto::{event, Emitter};
+use super::proto::{event, lock, Emitter};
 use crate::model::StepOutcome;
 use crate::RunHooks;
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// How often a blocked approval re-checks for Stop.
 const STOP_POLL: Duration = Duration::from_millis(200);
 
+/// The step whose gate is open right now, shared with the session so an answer is only
+/// accepted for a gate that is actually waiting.
+pub type Pending = Arc<Mutex<Option<usize>>>;
+
 pub struct ChannelHooks {
     emit: Emitter,
     stop: Arc<AtomicBool>,
     answers: Receiver<(usize, bool)>,
+    pending: Pending,
 }
 
 impl ChannelHooks {
-    pub fn new(emit: Emitter, stop: Arc<AtomicBool>, answers: Receiver<(usize, bool)>) -> Self {
-        ChannelHooks { emit, stop, answers }
+    pub fn new(emit: Emitter, stop: Arc<AtomicBool>, answers: Receiver<(usize, bool)>, pending: Pending) -> Self {
+        ChannelHooks { emit, stop, answers, pending }
+    }
+
+    fn wait_for_answer(&self, idx: usize) -> bool {
+        loop {
+            match self.answers.recv_timeout(STOP_POLL) {
+                Ok((i, approved)) if i == idx => return approved,
+                Ok(_) => {}
+                // Stop counts as "no", as does a host that went away.
+                Err(RecvTimeoutError::Timeout) if self.stop.load(Ordering::SeqCst) => return false,
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return false,
+            }
+        }
     }
 }
 
@@ -39,18 +57,13 @@ impl RunHooks for ChannelHooks {
     }
 
     fn approve(&mut self, idx: usize) -> bool {
+        // An answer that arrived before the gate opened is not an answer to it.
+        while self.answers.try_recv().is_ok() {}
+        *lock(&self.pending) = Some(idx);
         (self.emit)(event("run.approvalNeeded", json!({ "idx": idx })));
-        loop {
-            match self.answers.recv_timeout(STOP_POLL) {
-                // An answer for another step (a late one) is not this gate's.
-                Ok((i, approved)) if i == idx => return approved,
-                Ok(_) => {}
-                // Stop counts as "no", as does a host that went away.
-                Err(RecvTimeoutError::Timeout) if self.stop.load(Ordering::SeqCst) => return false,
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return false,
-            }
-        }
+        let approved = self.wait_for_answer(idx);
+        *lock(&self.pending) = None;
+        approved
     }
 
     fn should_stop(&self) -> bool {

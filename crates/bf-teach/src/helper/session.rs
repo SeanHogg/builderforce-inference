@@ -3,8 +3,8 @@
 //! while a run is busy).
 
 use super::backend::{Backend, RecordHandle};
-use super::hooks::ChannelHooks;
-use super::proto::{self, Emitter, Failure, PROTOCOL};
+use super::hooks::{ChannelHooks, Pending};
+use super::proto::{self, lock, Emitter, Failure, PROTOCOL};
 use crate::model::{new_id, now_ms, Episode, Skill};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -13,13 +13,16 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const COUNT_POLL: Duration = Duration::from_millis(300);
+/// How long the end of stdin waits for a stopped run to release the keyboard and mouse.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 
 struct ActiveRun {
     stop: Arc<AtomicBool>,
     answers: Sender<(usize, bool)>,
+    pending: Pending,
 }
 
 struct ActiveRecording {
@@ -56,6 +59,25 @@ impl Session {
         (self.emit)(answer);
     }
 
+    /// Answer a line that could not even be read as text (id unknown, so null).
+    pub fn reject(&self, message: &str) {
+        (self.emit)(proto::err(&Value::Null, Failure::new("bad_request", message)));
+    }
+
+    /// stdin closed: stop any run and wait briefly for it to let go of the input devices.
+    pub fn shutdown(&self) {
+        if let Some(r) = lock(&self.run).as_ref() {
+            r.stop.store(true, Ordering::SeqCst);
+        }
+        let deadline = Instant::now() + SHUTDOWN_WAIT;
+        while lock(&self.run).is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if let Some(rec) = lock(&self.recording).take() {
+            rec.watching.store(false, Ordering::SeqCst);
+        }
+    }
+
     fn dispatch(&self, method: &str, params: &Value) -> Result<Value, Failure> {
         match method {
             "hello" => Ok(json!({
@@ -67,7 +89,7 @@ impl Session {
             "record.stop" => self.record_stop(),
             "run.start" => self.run_start(params),
             "run.stop" => {
-                if let Some(r) = self.run.lock().unwrap().as_ref() {
+                if let Some(r) = lock(&self.run).as_ref() {
                     r.stop.store(true, Ordering::SeqCst);
                 }
                 Ok(json!({}))
@@ -90,9 +112,12 @@ impl Session {
     fn record_start(&self, params: &Value) -> Result<Value, Failure> {
         self.require_supported()?;
         let program = str_param(params, "program")?;
-        let args: Vec<String> = parse_field(params, "args")?.unwrap_or_default();
+        let args: Vec<String> = parse_field(params, "args", "`args` must be a list of strings")?.unwrap_or_default();
         let shots = PathBuf::from(str_param(params, "shotsDir")?);
-        let mut slot = self.recording.lock().unwrap();
+        if lock(&self.run).is_some() {
+            return Err(Failure::new("busy", "a run is in progress"));
+        }
+        let mut slot = lock(&self.recording);
         if slot.is_some() {
             return Err(Failure::new("busy", "a recording is already running"));
         }
@@ -107,15 +132,22 @@ impl Session {
         Ok(json!({}))
     }
 
-    /// Push `record.step {count}` whenever the number of captured steps changes.
+    /// Push `record.step {count}` whenever the number of captured steps changes. The
+    /// check and the emit happen under the recording lock, so nothing is pushed once
+    /// `record.stop` has taken the recording.
     fn watch_steps(&self, watching: Arc<AtomicBool>) {
         let (rec, emit) = (self.recording.clone(), self.emit.clone());
         let _ = std::thread::Builder::new().name("bf-teach-count".into()).spawn(move || {
             let mut last = 0;
-            while watching.load(Ordering::SeqCst) {
+            loop {
                 std::thread::sleep(COUNT_POLL);
-                let Some(count) = rec.lock().unwrap().as_ref().map(|r| r.handle.count()) else { break };
-                if count != last && watching.load(Ordering::SeqCst) {
+                let guard = lock(&rec);
+                let Some(r) = guard.as_ref() else { break };
+                if !watching.load(Ordering::SeqCst) {
+                    break;
+                }
+                let count = r.handle.count();
+                if count != last {
                     last = count;
                     emit(proto::event("record.step", json!({ "count": count })));
                 }
@@ -124,7 +156,7 @@ impl Session {
     }
 
     fn record_stop(&self) -> Result<Value, Failure> {
-        let Some(rec) = self.recording.lock().unwrap().take() else {
+        let Some(rec) = lock(&self.recording).take() else {
             return Err(Failure::new("idle", "no recording is running"));
         };
         rec.watching.store(false, Ordering::SeqCst);
@@ -158,50 +190,63 @@ impl Session {
 
     fn run_start(&self, params: &Value) -> Result<Value, Failure> {
         self.require_supported()?;
-        let skill: Skill = parse_field(params, "skill")?.ok_or_else(|| bad_params("`skill` is required"))?;
-        let values: BTreeMap<String, String> = parse_field(params, "values")?.unwrap_or_default();
+        // Parse errors never quote the input: `values` carries secrets.
+        let skill: Skill = parse_field(params, "skill", "`skill` is not a valid skill")?
+            .ok_or_else(|| bad_params("`skill` is required"))?;
+        let values: BTreeMap<String, String> =
+            parse_field(params, "values", "values must map names to strings")?.unwrap_or_default();
         // Before anything moves: a missing secret fails the request, not the run.
         crate::engine::resolve_params(&skill, &values).map_err(|e| Failure::new("missing_value", format!("{e:#}")))?;
+        if lock(&self.recording).is_some() {
+            return Err(Failure::new("busy", "a recording is in progress"));
+        }
 
-        let mut slot = self.run.lock().unwrap();
+        let mut slot = lock(&self.run);
         if slot.is_some() {
             return Err(Failure::new("busy", "a run is already in progress"));
         }
         let (tx, rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
-        *slot = Some(ActiveRun { stop: stop.clone(), answers: tx });
+        let pending: Pending = Arc::default();
+        *slot = Some(ActiveRun { stop: stop.clone(), answers: tx, pending: pending.clone() });
         drop(slot);
 
         let (backend, emit, run) = (self.backend.clone(), self.emit.clone(), self.run.clone());
         let spawned = std::thread::Builder::new().name("bf-teach-run".into()).spawn(move || {
-            let mut hooks = ChannelHooks::new(emit.clone(), stop, rx);
+            let mut hooks = ChannelHooks::new(emit.clone(), stop, rx, pending);
             let outcome = catch_unwind(AssertUnwindSafe(|| backend.run(&skill, &values, &mut hooks)));
-            // Free the slot first, so the host can start the next run on `run.finished`.
-            *run.lock().unwrap() = None;
             let fields = match outcome {
                 Ok(Ok(status)) => json!({ "status": status.as_str() }),
                 Ok(Err(e)) => json!({ "status": "failed", "error": format!("{e:#}") }),
                 Err(_) => json!({ "status": "failed", "error": "the run stopped unexpectedly" }),
             };
+            // Announce and free the slot under one lock: a `run.start` sent on seeing
+            // `run.finished` waits for the slot instead of being told `busy`.
+            let mut slot = lock(&run);
             emit(proto::event("run.finished", fields));
+            *slot = None;
         });
         if let Err(e) = spawned {
-            *self.run.lock().unwrap() = None;
+            *lock(&self.run) = None;
             return Err(Failure::new("internal", format!("could not start the run: {e}")));
         }
         Ok(json!({}))
     }
 
     fn approve_answer(&self, params: &Value) -> Result<Value, Failure> {
-        let idx = params.get("idx").and_then(Value::as_u64).ok_or_else(|| bad_params("`idx` must be a number"))?;
+        let idx = params.get("idx").and_then(Value::as_u64).ok_or_else(|| bad_params("`idx` must be a number"))? as usize;
         let approved = params.get("approved").and_then(Value::as_bool).ok_or_else(|| bad_params("`approved` must be a boolean"))?;
-        match self.run.lock().unwrap().as_ref() {
-            Some(r) => {
-                let _ = r.answers.send((idx as usize, approved));
-                Ok(json!({}))
-            }
-            None => Err(Failure::new("idle", "no run is waiting for an answer")),
+        let run = lock(&self.run);
+        let Some(r) = run.as_ref() else {
+            return Err(Failure::new("idle", "no run is waiting for an answer"));
+        };
+        // Held across the send, so the gate cannot close between the check and the answer.
+        let pending = lock(&r.pending);
+        if *pending != Some(idx) {
+            return Err(Failure::new("not_waiting", format!("step {idx} is not waiting for an answer")));
         }
+        let _ = r.answers.send((idx, approved));
+        Ok(json!({}))
     }
 }
 
@@ -213,10 +258,11 @@ fn str_param(params: &Value, key: &str) -> Result<String, Failure> {
     params.get(key).and_then(Value::as_str).map(str::to_string).ok_or_else(|| bad_params(&format!("`{key}` must be a string")))
 }
 
-/// An optional typed field: absent or null is `None`; present but malformed is an error.
-fn parse_field<T: serde::de::DeserializeOwned>(params: &Value, key: &str) -> Result<Option<T>, Failure> {
+/// An optional typed field: absent or null is `None`; present but malformed is an error
+/// carrying only `message`, never the serde text (which can echo the value).
+fn parse_field<T: serde::de::DeserializeOwned>(params: &Value, key: &str, message: &str) -> Result<Option<T>, Failure> {
     match params.get(key) {
         None | Some(Value::Null) => Ok(None),
-        Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|e| bad_params(&format!("`{key}`: {e}"))),
+        Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|_| bad_params(message)),
     }
 }

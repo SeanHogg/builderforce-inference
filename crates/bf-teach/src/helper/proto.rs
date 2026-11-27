@@ -2,7 +2,12 @@
 //! answers are `{id, result}` or `{id, error:{code, message}}`; pushes are `{event, ...}`.
 
 use serde_json::{json, Map, Value};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+/// Lock, surviving a poisoned mutex: one panicked thread must not wedge the protocol.
+pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Where every outgoing line goes. The binary writes it to stdout; tests collect it.
 pub type Emitter = Arc<dyn Fn(Value) + Send + Sync>;

@@ -31,7 +31,7 @@ struct DesktopRecording(crate::Recording);
 
 impl RecordHandle for DesktopRecording {
     fn count(&self) -> usize {
-        self.0.steps().len()
+        self.0.step_count()
     }
     fn error(&self) -> Option<String> {
         self.0.error()

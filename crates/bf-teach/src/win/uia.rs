@@ -66,24 +66,6 @@ impl Uia {
             .collect()
     }
 
-    /// Describe `el` for a recorded step. `point` is where it was clicked (screen
-    /// coordinates); without one, its centre is recorded.
-    pub fn describe(&self, el: &UIElement, point: Option<(i32, i32)>, process_name: &str) -> ElementRef {
-        let win = self.window_of(el);
-        let (px, py) = point.unwrap_or_else(|| centre(el));
-        let (wx, wy) = win.as_ref().map(|w| (w.rect.get_left(), w.rect.get_top())).unwrap_or((0, 0));
-        ElementRef {
-            name: el.get_name().unwrap_or_default(),
-            automation_id: el.get_automation_id().unwrap_or_default(),
-            control_type: control_type(el),
-            class_name: el.get_classname().unwrap_or_default(),
-            window_title: win.map(|w| w.title).unwrap_or_default(),
-            process_name: process_name.to_string(),
-            rel_x: px - wx,
-            rel_y: py - wy,
-        }
-    }
-
     /// Find the element a step recorded, inside `win`, by accessibility identity: its
     /// automation id when it has one, else its name — always with its control type.
     pub fn find(&self, win: &Window, target: &ElementRef) -> Option<UIElement> {
