@@ -4,11 +4,6 @@ members = [
     "crates/bf-index",
     "crates/bf-context",
     "crates/bf-compress",
-    "crates/bf-memory",
-    "crates/bf-local",
-    "crates/bf-teach",
-    "crates/bf-vault",
-    "crates/bf-cloud",
     "crates/bfi-gguf",
     "crates/bfi-core",
     "crates/bfi-models",
@@ -18,7 +13,6 @@ members = [
     "crates/bfi-engine",
     "crates/bfi-web",
     "crates/bfi-node",
-    "app/src-tauri",
 ]
 # A bare `cargo build` / `cargo test` leaves out `bfi-node`: it turns on bfi-core's
 # `webgpu`, and building it beside the native `bfi` binary in one invocation would unify
@@ -27,11 +21,6 @@ default-members = [
     "crates/bf-index",
     "crates/bf-context",
     "crates/bf-compress",
-    "crates/bf-memory",
-    "crates/bf-local",
-    "crates/bf-teach",
-    "crates/bf-vault",
-    "crates/bf-cloud",
     "crates/bfi-gguf",
     "crates/bfi-core",
     "crates/bfi-models",
@@ -40,7 +29,6 @@ default-members = [
     "crates/bfi",
     "crates/bfi-engine",
     "crates/bfi-web",
-    "app/src-tauri",
 ]
 
 [workspace.package]

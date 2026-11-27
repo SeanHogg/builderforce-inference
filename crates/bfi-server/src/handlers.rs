@@ -921,7 +921,7 @@ fn anthropic_sse_tool_use(model: &str, calls: &[bfi_runtime::ParsedToolCall]) ->
     body
 }
 
-/// NDJSON progress `{status,total,completed}` — the shape `bf-local` parses today.
+/// NDJSON progress `{status,total,completed}` — the shape Ollama clients parse.
 fn pull_ndjson_body() -> String {
     format!(
         "{}\n{}\n{}\n{}\n",

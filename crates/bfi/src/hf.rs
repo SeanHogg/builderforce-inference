@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use bfi_runtime::AliasMap;
 
-const UA: &str = "bfi/2026.10.4";
+const UA: &str = concat!("bfi/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSpec {

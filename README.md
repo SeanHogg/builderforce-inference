@@ -2,11 +2,14 @@
 
 > Part of [Builderforce open source](https://builderforce.ai/open-source): the MIT projects Builderforce.ai is built on.
 
-**Synapse** — the Builderforce desktop app and local AI runtime. Run LLMs on your own machine, keep a private Evermind memory, connect workspace tools through the Builderforce VS Code extension, and hand work to agents.
+The Builderforce native inference engine (`bfi`) and local code-context service (`bf-context`). Run LLMs on your own machine with no Ollama required, and give the Builderforce VS Code extension fast local code search, repo maps and prompt compression. Status: see [docs/PRD-native-engine.md](docs/PRD-native-engine.md). GPU 70% vs llama-bench and live Bonsai 27B identity are not claimed. Keep `crates/bfi` `import-ollama` if you are converting an existing Ollama library.
 
-Synapse now runs models itself. Ollama is not required. The desktop app supervises `bfi serve`; a separately installed Ollama is not on the path. Keep `crates/bfi` `import-ollama` if you are converting an existing Ollama library.
+## Synapse desktop app — retired (2026-11-27)
 
-> Status: Synapse ships and supervises the native `bfi` engine for local models (see [docs/PRD-native-engine.md](docs/PRD-native-engine.md)). CPU sidecar ships. GPU 70% vs llama-bench and live Bonsai 27B identity are not claimed.
+The Synapse Tauri desktop app is retired. The editor is VS Code with the Builderforce extension:
+
+- Local models run with `bfi serve`, which announces itself in `~/.builderforce/bfi.json` (the extension discovers it), or in-editor via `@seanhogg/bfi-node`.
+- The code-context service is `bf-context serve`; it writes `~/.builderforce/desktop.json`, which the extension reads (the file name is a wire contract and is unchanged).
 
 ## Install
 
@@ -20,21 +23,15 @@ GitHub Release binaries are not signed yet (owner signing secrets).
 
 | Path | What |
 |---|---|
-| `app/` | Synapse desktop app (Tauri: `src-tauri/`, `ui/`, `console/`) |
 | `crates/bfi-gguf` | GGUF v2/v3 reader and GGML type registry (including PrismML `PQ2_0` / `PTQ1_0`) |
 | `crates/bfi-core` | Tensor + Backend trait; CPU reference kernels |
 | `crates/bfi-models` | Architecture registry (`qwen3` first, then `qwen35`) |
 | `crates/bfi-runtime` | Tokenizer, sampler, `mix_decode` concurrent token mixing and `generate_batch`, prefix cache, grammar-constrained decode, embeddings, model store, `bfi fit` |
 | `crates/bfi-server` | OpenAI / Anthropic / Ollama HTTP API |
 | `crates/bfi` | CLI: `pull`, `run`, `serve`, `fit`, `ls`, `rm`, `ps`, `bench` |
-| `crates/bf-local` | Local models: catalog, hardware fit, OpenAI/Anthropic-compatible loopback API |
 | `crates/bf-context` | Loopback context service used by the Builderforce VS Code extension |
 | `crates/bf-index` | Code index (tree-sitter, BM25, local embeddings, reference-ranked repo map) |
 | `crates/bf-compress` | LLMLingua-2 token-level prompt compression; code fences, paths and numbers are never touched (ONNX model behind the `compress` feature) |
-| `crates/bf-memory` | Evermind memory client |
-| `crates/bf-teach` | Teach-once UI recording for self-directed agents |
-| `crates/bf-vault` | Secrets in the OS credential store |
-| `crates/bf-cloud` | builderforce.ai client (device sign-in, platform API, LLM gateway) |
 
 ## Build
 
@@ -50,7 +47,7 @@ cargo build -p bf-context --features compress
 
 ### `bfi` engine options
 
-`bfi run`, `bfi serve` and `bfi bench` take the same engine flags. `bfi serve` also reads them from the environment, so the desktop app can set them on the sidecar:
+`bfi run`, `bfi serve` and `bfi bench` take the same engine flags. `bfi serve` also reads them from the environment, so a supervisor or service manager can set them:
 
 | Flag | Env (`bfi serve`) | What |
 |---|---|---|
@@ -63,7 +60,7 @@ cargo build -p bf-context --features compress
 Use **BuilderForce Workspace** in VS Code for MCP. Update any editor configuration that still launches `synapse mcp` or `bf-context mcp`. The extension can use the loopback context service for hybrid search and compression when available.
 
 ```sh
-bf-context serve                         # run the service (what the desktop app does, minus the UI)
+bf-context serve                         # run the loopback service the VS Code extension discovers
 bf-context index <dir>                   # index a workspace once and print its status
 bf-context search <dir> <query>          # search a workspace and print the hits as JSON
 bf-context repo-map --root <dir> [--max-tokens N] [--focus <path>…] [--query <task>…]

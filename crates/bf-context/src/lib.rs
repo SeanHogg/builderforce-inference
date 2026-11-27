@@ -1,6 +1,6 @@
 //! bf-context — the Builderforce local context service.
 //!
-//! The desktop app and headless binary share this indexed workspace registry
+//! The standalone CLI (`bf-context serve`) and the library share this indexed workspace registry
 //! and its loopback HTTP service.
 
 pub mod activity;

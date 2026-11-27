@@ -1,4 +1,4 @@
-//! bf-index — the local code index behind Synapse.
+//! bf-index — the local code index behind `bf-context`.
 //!
 //! Structure (tree-sitter definitions, symbols, a PageRank-ranked repo map), keywords
 //! (identifier-aware BM25) and meaning (local embeddings) over one SQLite file per

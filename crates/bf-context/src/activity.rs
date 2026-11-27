@@ -1,4 +1,4 @@
-//! What the service has been asked, by whom — the desktop window's "Recent activity".
+//! What the service has been asked, by whom — the activity log behind `bf-context serve`.
 //!
 //! In memory only and bounded: it answers "is Claude Code actually using the index, and
 //! what did it look for?", not an audit trail. Only the calls a person would recognise

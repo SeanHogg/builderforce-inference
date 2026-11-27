@@ -1,4 +1,4 @@
-//! One way to reach the operations: the running desktop service over loopback when there
+//! One way to reach the operations: the running `bf-context serve` service over loopback when there
 //! is one (its index is already warm and shared), otherwise an in-process registry. The
 //! The CLI can use either path.
 

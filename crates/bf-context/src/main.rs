@@ -1,6 +1,6 @@
 //! `bf-context` — the headless context service.
 //!
-//!   bf-context serve                  run the service (what the desktop app does, minus the UI)
+//!   bf-context serve                  run the loopback service (VS Code discovers it via ~/.builderforce/desktop.json)
 //!   bf-context index <dir>            index a workspace once and print its status
 //!   bf-context search <dir> <query>   search a workspace and print the hits as JSON
 //!   bf-context repo-map --root <dir> [--max-tokens N] [--focus <path>…] [--query <task>…]

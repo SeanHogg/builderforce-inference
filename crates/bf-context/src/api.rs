@@ -1,4 +1,4 @@
-//! The service operations shared by the loopback HTTP server and desktop UI.
+//! The service operations shared by the loopback HTTP server and the CLI.
 
 use crate::activity::{now_ms, Entry};
 use crate::registry::Registry;
@@ -83,13 +83,13 @@ pub mod ops {
 const ACTIVITY_LIMIT: usize = 100;
 
 /// The operations worth showing a person in "Recent activity" — work a tool asked for.
-/// Health probes, listings and the window's own polling are left out.
+/// Health probes, listings and in-process polling are left out.
 fn is_tracked(op: &str) -> bool {
     matches!(op, ops::SEARCH | ops::REPO_MAP | ops::CHECK_REFERENCES | ops::ENSURE | ops::COMPRESS)
 }
 
 /// `dispatch` on behalf of an outside client (`vscode`, `mcp`, …), recorded in the
-/// registry's activity log. The desktop window calls `dispatch` directly: its own
+/// registry's activity log. In-process callers use `dispatch` directly: their own
 /// polling is not activity.
 pub fn dispatch_from(reg: &Arc<Registry>, client: &str, op: &str, body: Value) -> Result<Value> {
     if !is_tracked(op) {
