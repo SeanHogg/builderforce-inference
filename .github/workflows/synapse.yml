@@ -179,6 +179,9 @@ jobs:
       # inno_updater.exe, so the signing step below covers it).
       - name: Package Synapse
         shell: bash
+        env:
+          # @vscode/ripgrep's npm installer reads this when fetching the pinned GitHub release.
+          GITHUB_TOKEN: ${{ github.token }}
         run: >
           node app/scripts/build.mjs --stage package
           --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
