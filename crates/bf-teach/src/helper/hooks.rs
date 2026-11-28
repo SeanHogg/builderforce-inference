@@ -50,7 +50,7 @@ impl RunHooks for ChannelHooks {
     }
 
     fn step_finished(&mut self, idx: usize, outcome: StepOutcome, detail: Option<String>) {
-        let mut f = json!({ "runId": self.run_id, "idx": idx, "outcome": outcome.as_str() });
+        let mut f = json!({ "runId": self.run_id, "idx": idx, "outcome": outcome });
         if let Some(d) = detail {
             f["detail"] = json!(d);
         }

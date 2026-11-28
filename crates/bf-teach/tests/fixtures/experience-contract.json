@@ -1,0 +1,230 @@
+{
+  "episode": {
+    "id": "0000000000000001",
+    "name": "Record invoice",
+    "program": "ledger.exe",
+    "args": [
+      "--sandbox"
+    ],
+    "startedAt": 1730000000000,
+    "endedAt": 1730000001000,
+    "steps": [
+      {
+        "id": "open",
+        "atMs": 0,
+        "action": {
+          "kind": "click",
+          "target": {
+            "name": "Amount",
+            "automationId": "amount",
+            "controlType": "Edit",
+            "className": "TextBox",
+            "windowTitle": "Invoice",
+            "processName": "ledger",
+            "relX": 25,
+            "relY": -12
+          }
+        },
+        "screenshot": "open.jpg"
+      },
+      {
+        "id": "amount",
+        "atMs": 50,
+        "action": {
+          "kind": "setValue",
+          "target": {
+            "name": "Amount",
+            "automationId": "amount",
+            "controlType": "Edit",
+            "className": "TextBox",
+            "windowTitle": "Invoice",
+            "processName": "ledger",
+            "relX": 25,
+            "relY": -12
+          },
+          "value": "250",
+          "secret": false
+        },
+        "screenshot": null
+      },
+      {
+        "id": "fixed",
+        "atMs": 100,
+        "action": {
+          "kind": "setValue",
+          "target": {
+            "name": "Amount",
+            "automationId": "amount",
+            "controlType": "Edit",
+            "className": "TextBox",
+            "windowTitle": "Invoice",
+            "processName": "ledger",
+            "relX": 25,
+            "relY": -12
+          },
+          "value": "note",
+          "secret": false
+        },
+        "screenshot": null
+      },
+      {
+        "id": "secret",
+        "atMs": 150,
+        "action": {
+          "kind": "setValue",
+          "target": {
+            "name": "Amount",
+            "automationId": "amount",
+            "controlType": "Edit",
+            "className": "TextBox",
+            "windowTitle": "Invoice",
+            "processName": "ledger",
+            "relX": 25,
+            "relY": -12
+          },
+          "value": "",
+          "secret": true
+        },
+        "screenshot": null
+      },
+      {
+        "id": "next",
+        "atMs": 200,
+        "action": {
+          "kind": "keys",
+          "keys": "Enter",
+          "target": null
+        },
+        "screenshot": null
+      }
+    ]
+  },
+  "skill": {
+    "id": "0000000000000002",
+    "name": "Record invoice",
+    "program": "ledger.exe",
+    "args": [
+      "--sandbox"
+    ],
+    "params": [
+      {
+        "name": "amount",
+        "label": "Amount",
+        "default": "250",
+        "secret": false
+      },
+      {
+        "name": "amount_2",
+        "label": "Amount",
+        "default": null,
+        "secret": true
+      }
+    ],
+    "steps": [
+      {
+        "id": "open",
+        "action": {
+          "kind": "click",
+          "target": {
+            "name": "Amount",
+            "automationId": "amount",
+            "controlType": "Edit",
+            "className": "TextBox",
+            "windowTitle": "Invoice",
+            "processName": "ledger",
+            "relX": 25,
+            "relY": -12
+          }
+        },
+        "requiresApproval": true,
+        "screenshot": "open.jpg"
+      },
+      {
+        "id": "amount",
+        "action": {
+          "kind": "setValue",
+          "target": {
+            "name": "Amount",
+            "automationId": "amount",
+            "controlType": "Edit",
+            "className": "TextBox",
+            "windowTitle": "Invoice",
+            "processName": "ledger",
+            "relX": 25,
+            "relY": -12
+          },
+          "value": {
+            "from": "param",
+            "name": "amount"
+          }
+        },
+        "requiresApproval": false,
+        "screenshot": null
+      },
+      {
+        "id": "fixed",
+        "action": {
+          "kind": "setValue",
+          "target": {
+            "name": "Amount",
+            "automationId": "amount",
+            "controlType": "Edit",
+            "className": "TextBox",
+            "windowTitle": "Invoice",
+            "processName": "ledger",
+            "relX": 25,
+            "relY": -12
+          },
+          "value": {
+            "from": "literal",
+            "text": "note"
+          }
+        },
+        "requiresApproval": false,
+        "screenshot": null
+      },
+      {
+        "id": "secret",
+        "action": {
+          "kind": "setValue",
+          "target": {
+            "name": "Amount",
+            "automationId": "amount",
+            "controlType": "Edit",
+            "className": "TextBox",
+            "windowTitle": "Invoice",
+            "processName": "ledger",
+            "relX": 25,
+            "relY": -12
+          },
+          "value": {
+            "from": "param",
+            "name": "amount_2"
+          }
+        },
+        "requiresApproval": false,
+        "screenshot": null
+      },
+      {
+        "id": "next",
+        "action": {
+          "kind": "keys",
+          "keys": "Enter",
+          "target": null
+        },
+        "requiresApproval": false,
+        "screenshot": null
+      }
+    ],
+    "sourceEpisode": "0000000000000001",
+    "createdAt": 1730000001000,
+    "routine": {
+      "schedule": {
+        "every": "minutes",
+        "minutes": 5
+      },
+      "values": {},
+      "enabled": true
+    }
+  }
+}

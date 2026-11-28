@@ -144,18 +144,6 @@ pub enum RunStatus {
     Denied,
 }
 
-impl RunStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            RunStatus::Running => "running",
-            RunStatus::Succeeded => "succeeded",
-            RunStatus::Failed => "failed",
-            RunStatus::Stopped => "stopped",
-            RunStatus::Denied => "denied",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StepOutcome {
@@ -166,18 +154,6 @@ pub enum StepOutcome {
     Failed,
     Approved,
     Denied,
-}
-
-impl StepOutcome {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            StepOutcome::Ok => "ok",
-            StepOutcome::Fallback => "fallback",
-            StepOutcome::Failed => "failed",
-            StepOutcome::Approved => "approved",
-            StepOutcome::Denied => "denied",
-        }
-    }
 }
 
 /// A short random id (16 hex chars), in the engine's `newExperienceId` alphabet — safe as

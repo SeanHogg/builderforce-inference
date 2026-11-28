@@ -38,7 +38,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libclang-dev libxcb1-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev
-      - run: cargo test -p bf-teach --lib
+      - run: cargo test -p bf-teach --lib --test experience_contract
 
   tag:
     runs-on: ubuntu-22.04

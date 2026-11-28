@@ -218,7 +218,7 @@ impl Session {
             let mut hooks = ChannelHooks::new(emit.clone(), run_id.clone(), stop, rx, pending);
             let outcome = catch_unwind(AssertUnwindSafe(|| backend.run(&skill, &values, &mut hooks)));
             let fields = match outcome {
-                Ok(Ok(status)) => json!({ "runId": run_id, "status": status.as_str() }),
+                Ok(Ok(status)) => json!({ "runId": run_id, "status": status }),
                 Ok(Err(e)) => json!({ "runId": run_id, "status": "failed", "error": format!("{e:#}") }),
                 Err(_) => json!({ "runId": run_id, "status": "failed", "error": "the run stopped unexpectedly" }),
             };
