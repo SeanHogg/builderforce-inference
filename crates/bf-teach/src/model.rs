@@ -1,29 +1,9 @@
-//! The experience wire types, as `@seanhogg/builderforce-memory-engine` defines them
-//! (`src/experience/types.ts`): camelCase JSON, actions tagged by `kind`, epoch-millisecond
-//! timestamps. The engine owns the domain — Train Once, approval gates, routines, storage
-//! (through memory-mcp); this crate only produces what a recording captured and consumes
-//! the skills it replays, so it mirrors exactly the fields it reads or writes. Anything
-//! else on the wire (a skill's routine, say) passes through untouched.
+//! Native methods for the generated Train Once wire contract. The memory engine
+//! owns the schema. The helper reads a projection of each procedure for replay.
 
 use serde::{Deserialize, Serialize};
 
-/// A UI element, identified the way UI Automation sees it, plus where it was acted on.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
-pub struct ElementRef {
-    pub name: String,
-    pub automation_id: String,
-    /// `Button`, `Edit`, `MenuItem`, … (the UI Automation control type).
-    pub control_type: String,
-    pub class_name: String,
-    /// The top-level window the element sits in.
-    pub window_title: String,
-    pub process_name: String,
-    /// The point acted on, relative to the window's top-left — the fallback when the
-    /// element cannot be found by identity at replay.
-    pub rel_x: i32,
-    pub rel_y: i32,
-}
+include!("experience_model.generated.rs");
 
 impl ElementRef {
     /// The label a person would use for it: its name, else its automation id (the
@@ -33,72 +13,6 @@ impl ElementRef {
     }
 }
 
-/// One thing the person did, as recorded.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum Action {
-    Click { target: ElementRef },
-    /// A field's value changed. `secret` fields (passwords) are recorded without a value.
-    #[serde(rename_all = "camelCase")]
-    SetValue { target: ElementRef, value: String, #[serde(default)] secret: bool },
-    /// A key or shortcut that is an action in itself: `Enter`, `Tab`, `Ctrl+S`.
-    Keys { keys: String, #[serde(default)] target: Option<ElementRef> },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecordedStep {
-    pub id: String,
-    /// Milliseconds since the recording started.
-    pub at_ms: u64,
-    pub action: Action,
-    /// Screenshot file name inside the episode's folder.
-    #[serde(default)]
-    pub screenshot: Option<String>,
-}
-
-/// One demonstration: a program Synapse launched, and what the person did in it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Episode {
-    pub id: String,
-    pub name: String,
-    pub program: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-    /// Epoch milliseconds.
-    pub started_at: i64,
-    #[serde(default)]
-    pub ended_at: Option<i64>,
-    pub steps: Vec<RecordedStep>,
-}
-
-/// A value a skill asks for at run time.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillParam {
-    pub name: String,
-    pub label: String,
-    #[serde(default)]
-    pub default: Option<String>,
-    pub secret: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "from", rename_all = "camelCase")]
-pub enum SkillValue {
-    Param { name: String },
-    Literal { text: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum SkillAction {
-    Click { target: ElementRef },
-    SetValue { target: ElementRef, value: SkillValue },
-    Keys { keys: String, #[serde(default)] target: Option<ElementRef> },
-}
-
 impl SkillAction {
     pub fn target(&self) -> Option<&ElementRef> {
         match self {
@@ -106,54 +20,6 @@ impl SkillAction {
             SkillAction::Keys { target, .. } => target.as_ref(),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillStep {
-    pub id: String,
-    pub action: SkillAction,
-    /// Pause and ask the person before doing this step.
-    pub requires_approval: bool,
-    #[serde(default)]
-    pub screenshot: Option<String>,
-}
-
-/// A Train Once skill — the fields replay reads.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Skill {
-    pub id: String,
-    pub name: String,
-    pub program: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-    pub params: Vec<SkillParam>,
-    pub steps: Vec<SkillStep>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RunStatus {
-    Running,
-    Succeeded,
-    Failed,
-    /// The person pressed Esc or Stop.
-    Stopped,
-    /// The person declined an approval.
-    Denied,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum StepOutcome {
-    /// Done by accessibility identity, and verified where there was something to verify.
-    Ok,
-    /// The element was not found by identity; done at its recorded position.
-    Fallback,
-    Failed,
-    Approved,
-    Denied,
 }
 
 /// A short random id (16 hex chars), in the engine's `newExperienceId` alphabet — safe as
